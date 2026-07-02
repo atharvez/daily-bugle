@@ -22,6 +22,13 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; DailyReportBot/1.0; +https://github.com/)"
 }
 
+# Reddit specifically requires a UA in this format or it 403s bot-like traffic.
+# Replace 'your_reddit_username' with your actual username (doesn't need to be
+# the account you use to browse — just needs to be a real Reddit username).
+REDDIT_HEADERS = {
+    "User-Agent": "github-actions:daily-startup-report:v1.0 (by /u/your_reddit_username)"
+}
+
 # ---------------------------------------------------------------------------
 # STARTUP DEMAND SOURCES
 # ---------------------------------------------------------------------------
@@ -60,6 +67,14 @@ def fetch_product_hunt(limit=8):
         headers={"Authorization": f"Bearer {token}"},
         timeout=15,
     ).json()
+
+    if "errors" in resp:
+        # PH returns a 200 with an "errors" array instead of raising an HTTP
+        # error, so we surface it explicitly rather than hitting a NoneType crash.
+        raise RuntimeError(f"Product Hunt API error: {resp['errors']}")
+    if not resp.get("data"):
+        raise RuntimeError(f"Product Hunt returned no data: {resp}")
+
     edges = resp["data"]["posts"]["edges"]
     return [f"- {e['node']['name']} — {e['node']['tagline']} "
             f"({e['node']['votesCount']} votes) {e['node']['url']}" for e in edges]
@@ -75,7 +90,7 @@ def fetch_reddit(subreddits=("startups", "Entrepreneur"), limit=5):
     for sub in subreddits:
         resp = requests.get(
             f"https://www.reddit.com/r/{sub}/top.json?t=day&limit={limit}",
-            headers=HEADERS, timeout=15,
+            headers=REDDIT_HEADERS, timeout=15,
         )
         resp.raise_for_status()
         data = resp.json()
