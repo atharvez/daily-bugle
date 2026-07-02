@@ -196,9 +196,10 @@ def safe_fetch(name, fn, *args, **kwargs):
 # ---------------------------------------------------------------------------
 
 def summarize_with_ai(startup_raw, vc_raw):
-    prompt = f"""You are a sharp, well-read startup analyst writing a personal
-morning briefing for a founder friend — think a smart friend texting you
-"here's what's interesting today," not a corporate report generator.
+    prompt = f"""You are a sharp, well-read startup analyst writing a morning
+briefing email. Tone should be natural and conversational, like a smart
+person sharing genuinely interesting observations — not corporate, not
+robotic, but also not addressed to any named person.
 
 Write in a natural, conversational tone. Full sentences where they help,
 short punchy bullets where a list is clearer. No generic filler phrases
@@ -234,20 +235,37 @@ Keep the whole email under 600 words total. If a section's raw data is
 thin or mostly "Unavailable today" notices, say so briefly rather than
 padding it out.
 
-FORMAT YOUR RESPONSE AS CLEAN HTML (not Markdown). Use this exact structure:
-- Wrap everything in a single <div> with inline styles (no <html>/<head>/<body>
-  tags, no external CSS, no classes — this goes straight into an email body).
+STRICT OUTPUT RULES — read carefully, these are not optional:
+- Do NOT include a greeting, salutation, "Hey [Name]," sign-off, or any
+  placeholder text like [Founder Friend's Name]. This is an automated
+  email with no recipient name available — never invent one or leave a
+  placeholder for one. Start directly with the content.
+- Do NOT include any preamble, meta-commentary, or explanation of what
+  you're about to do (e.g. no "Here's a rundown..." intro line).
+- Output ONLY valid HTML. Never mix in plain, untagged prose sentences —
+  every piece of visible text must be inside an HTML tag.
+- Never use Markdown syntax (*, #, -, backticks) anywhere in the output.
+- Never truncate mid-tag or mid-sentence — if you are running long, cut
+  content (drop an item or shorten a section) rather than cutting off
+  output partway through.
+- The very first characters of your response must be exactly: <div
+- The very last characters of your response must be exactly: </div>
+- Nothing may appear before the opening <div> or after the closing </div>
+  — no code fences, no commentary, nothing.
+
+HTML STRUCTURE:
+- Wrap everything in a single <div> with inline styles (no <html>/<head>/
+  <body> tags, no external CSS, no classes — this goes straight into an
+  email body).
 - Use <h2 style="..."> for the four section titles.
 - Use <p style="..."> for narrative paragraphs.
 - Use <ul><li style="..."> for bullet lists.
-- Use <a href="URL" style="color:#2563eb;"> for links, with real anchor text
-  (never show a bare raw URL as visible text).
+- Use <a href="URL" style="color:#2563eb;"> for links, with real anchor
+  text (never show a bare raw URL as visible text).
 - Use <strong> for emphasis instead of markdown asterisks.
 - Keep inline styles minimal and email-safe: font-family: Arial, sans-serif;
-  font-size: 14px; line-height: 1.5; color: #1a1a1a; a bit of margin between
-  sections.
-- Do NOT include ```html code fences or any markdown syntax (*, #, -) anywhere
-  in the output — output must be valid HTML only, ready to send as-is.
+  font-size: 14px; line-height: 1.5; color: #1a1a1a; a bit of margin
+  between sections.
 
 === STARTUP DEMAND RAW DATA ===
 {startup_raw}
@@ -265,13 +283,18 @@ FORMAT YOUR RESPONSE AS CLEAN HTML (not Markdown). Use this exact structure:
             "contents": [
                 {"parts": [{"text": prompt}]}
             ],
-            "generationConfig": {"maxOutputTokens": 2000}
+            "generationConfig": {"maxOutputTokens": 4000}
         },
         timeout=60,
     )
     resp.raise_for_status()
     data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    candidate = data["candidates"][0]
+    finish_reason = candidate.get("finishReason", "")
+    if finish_reason == "MAX_TOKENS":
+        print("WARNING: Gemini response was truncated (hit MAX_TOKENS). "
+              "Consider shortening the requested content or raising maxOutputTokens further.")
+    return candidate["content"]["parts"][0]["text"]
 
 
 # ---------------------------------------------------------------------------
@@ -279,13 +302,25 @@ FORMAT YOUR RESPONSE AS CLEAN HTML (not Markdown). Use this exact structure:
 # ---------------------------------------------------------------------------
 
 def send_email(html_body):
-    # Safety net: strip ```html fences if the model adds them despite instructions
     cleaned = html_body.strip()
+
+    # Strip ```html fences if present
     if cleaned.startswith("```"):
         cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
         if cleaned.rstrip().endswith("```"):
             cleaned = cleaned.rstrip()[:-3]
     cleaned = cleaned.strip()
+
+    # Hard safety net: extract only the outermost <div>...</div>, discarding
+    # any stray greeting/preamble text or trailing junk outside it, in case
+    # the model doesn't follow the "start/end exactly with div" instruction.
+    start = cleaned.find("<div")
+    end = cleaned.rfind("</div>")
+    if start != -1 and end != -1:
+        cleaned = cleaned[start:end + len("</div>")]
+    else:
+        print("WARNING: Could not find <div>...</div> boundaries in AI output — "
+              "sending as-is, formatting may be off.")
 
     msg = MIMEText(cleaned, "html")
     msg["Subject"] = "Your Morning Startup & VC Briefing"
