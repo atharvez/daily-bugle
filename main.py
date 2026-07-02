@@ -196,13 +196,58 @@ def safe_fetch(name, fn, *args, **kwargs):
 # ---------------------------------------------------------------------------
 
 def summarize_with_ai(startup_raw, vc_raw):
-    prompt = f"""You are producing a concise daily briefing for a startup founder.
+    prompt = f"""You are a sharp, well-read startup analyst writing a personal
+morning briefing for a founder friend — think a smart friend texting you
+"here's what's interesting today," not a corporate report generator.
 
-Below is raw scraped data from two categories. Write a clean, skimmable
-summary with two sections: "Startup Demand Signals" and "VC Investment
-Activity". Under each, pull out the 5-8 most notable/high-signal items,
-group related items together, drop noise/duplicates, and keep it under
-400 words total. Use short bullet points. Include source links where present.
+Write in a natural, conversational tone. Full sentences where they help,
+short punchy bullets where a list is clearer. No generic filler phrases
+like "in today's fast-paced world." Have an actual point of view — if
+something looks like noise, say so; if something looks like a real signal,
+say why.
+
+Structure the email in FOUR sections, in this order:
+
+1. **What's Booming Right Now** — Look across all the raw data (HN, Product
+   Hunt, Reddit, Indie Hackers, G2) and identify 3-5 categories/niches that
+   show real momentum today (repeated themes, high engagement, multiple
+   independent mentions). Don't just list posts — synthesize the pattern.
+   E.g. "AI coding agents are having a moment again — three of today's top
+   HN posts and two PH launches are in this space."
+
+2. **Startup Demand Signals** — The most notable individual items (5-8),
+   grouped sensibly, each with a one-line "why this matters" instead of
+   just a bare link. Include source links.
+
+3. **VC Investment Activity** — Same treatment for the VC-side raw data:
+   5-8 notable items, grouped, one line of context each, links included.
+
+4. **3 Startup Ideas Worth Considering** — Based on the gaps, complaints,
+   or unmet demand you can infer from today's data (e.g. a recurring
+   complaint on Reddit with no good product answering it, or a category
+   with rising interest but few strong players), propose 3 concrete,
+   specific startup ideas. Each should be 2-3 sentences: what it is, who
+   it's for, and why today's data suggests the timing is right. Be
+   opinionated and specific — avoid vague ideas like "an AI tool for X."
+
+Keep the whole email under 600 words total. If a section's raw data is
+thin or mostly "Unavailable today" notices, say so briefly rather than
+padding it out.
+
+FORMAT YOUR RESPONSE AS CLEAN HTML (not Markdown). Use this exact structure:
+- Wrap everything in a single <div> with inline styles (no <html>/<head>/<body>
+  tags, no external CSS, no classes — this goes straight into an email body).
+- Use <h2 style="..."> for the four section titles.
+- Use <p style="..."> for narrative paragraphs.
+- Use <ul><li style="..."> for bullet lists.
+- Use <a href="URL" style="color:#2563eb;"> for links, with real anchor text
+  (never show a bare raw URL as visible text).
+- Use <strong> for emphasis instead of markdown asterisks.
+- Keep inline styles minimal and email-safe: font-family: Arial, sans-serif;
+  font-size: 14px; line-height: 1.5; color: #1a1a1a; a bit of margin between
+  sections.
+- Do NOT include ```html code fences or any markdown syntax (*, #, -) anywhere
+  in the output — output must be valid HTML only, ready to send as-is.
 
 === STARTUP DEMAND RAW DATA ===
 {startup_raw}
@@ -219,7 +264,8 @@ group related items together, drop noise/duplicates, and keep it under
         json={
             "contents": [
                 {"parts": [{"text": prompt}]}
-            ]
+            ],
+            "generationConfig": {"maxOutputTokens": 2000}
         },
         timeout=60,
     )
@@ -232,9 +278,17 @@ group related items together, drop noise/duplicates, and keep it under
 # EMAIL
 # ---------------------------------------------------------------------------
 
-def send_email(body):
-    msg = MIMEText(body)
-    msg["Subject"] = "Daily Startup & VC Report"
+def send_email(html_body):
+    # Safety net: strip ```html fences if the model adds them despite instructions
+    cleaned = html_body.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
+        if cleaned.rstrip().endswith("```"):
+            cleaned = cleaned.rstrip()[:-3]
+    cleaned = cleaned.strip()
+
+    msg = MIMEText(cleaned, "html")
+    msg["Subject"] = "Your Morning Startup & VC Briefing"
     msg["From"] = os.environ["SMTP_USER"]
     msg["To"] = os.environ["TO_EMAIL"]
 
@@ -273,9 +327,11 @@ def main():
         traceback.print_exc()
         # Fall back to raw data if the AI step fails, so the email still sends
         summary = (
-            "AI summarization failed today — sending raw data instead.\n\n"
-            f"=== STARTUP DEMAND ===\n{startup_raw}\n\n"
-            f"=== VC INVESTMENT ===\n{vc_raw}"
+            "<div style='font-family:Arial,sans-serif;font-size:14px;'>"
+            "<p><strong>AI summarization failed today — sending raw data instead.</strong></p>"
+            f"<pre style='white-space:pre-wrap;font-family:monospace;font-size:12px;'>"
+            f"=== STARTUP DEMAND ===\n{startup_raw}\n\n=== VC INVESTMENT ===\n{vc_raw}"
+            f"</pre></div>"
         )
 
     send_email(summary)
