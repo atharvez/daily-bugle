@@ -22,13 +22,6 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; DailyReportBot/1.0; +https://github.com/)"
 }
 
-# Reddit specifically requires a UA in this format or it 403s bot-like traffic.
-# Replace 'your_reddit_username' with your actual username (doesn't need to be
-# the account you use to browse — just needs to be a real Reddit username).
-REDDIT_HEADERS = {
-    "User-Agent": "github-actions:daily-startup-report:v1.0 (by /u/your_reddit_username)"
-}
-
 # ---------------------------------------------------------------------------
 # STARTUP DEMAND SOURCES
 # ---------------------------------------------------------------------------
@@ -81,23 +74,20 @@ def fetch_product_hunt(limit=8):
 
 
 def fetch_reddit(subreddits=("startups", "Entrepreneur"), limit=5):
-    """Top daily posts from given subreddits via Reddit's public JSON endpoint.
-    No auth/app registration required — works for read-only public data.
-    More rate-limit sensitive than the OAuth API, but fine for one daily pull.
-    If you later get API credentials, swap this for the OAuth version for
-    higher reliability."""
+    """Top daily posts via Reddit's public RSS feed.
+    GitHub Actions runner IPs are commonly blocked by Reddit's Cloudflare
+    protection on the .json endpoint regardless of headers used — the RSS
+    feed is less aggressively protected and works more reliably from
+    datacenter IPs. Still no auth required."""
     results = []
     for sub in subreddits:
-        resp = requests.get(
-            f"https://www.reddit.com/r/{sub}/top.json?t=day&limit={limit}",
-            headers=REDDIT_HEADERS, timeout=15,
+        feed = feedparser.parse(
+            f"https://www.reddit.com/r/{sub}/top/.rss?t=day&limit={limit}"
         )
-        resp.raise_for_status()
-        data = resp.json()
-        for post in data["data"]["children"]:
-            d = post["data"]
-            results.append(f"- [r/{sub}] {d['title']} ({d['ups']} upvotes) "
-                            f"https://reddit.com{d['permalink']}")
+        if not feed.entries:
+            raise RuntimeError(f"No entries returned for r/{sub} (possibly blocked)")
+        for entry in feed.entries[:limit]:
+            results.append(f"- [r/{sub}] {entry.title} {entry.link}")
     return results
 
 
@@ -216,24 +206,25 @@ Structure the email in FOUR sections, in this order:
    E.g. "AI coding agents are having a moment again — three of today's top
    HN posts and two PH launches are in this space."
 
-2. **Startup Demand Signals** — The most notable individual items (5-8),
+2. **Startup Demand Signals** — The 4-6 most notable individual items,
    grouped sensibly, each with a one-line "why this matters" instead of
    just a bare link. Include source links.
 
 3. **VC Investment Activity** — Same treatment for the VC-side raw data:
-   5-8 notable items, grouped, one line of context each, links included.
+   4-6 notable items, grouped, one line of context each, links included.
 
 4. **3 Startup Ideas Worth Considering** — Based on the gaps, complaints,
    or unmet demand you can infer from today's data (e.g. a recurring
    complaint on Reddit with no good product answering it, or a category
    with rising interest but few strong players), propose 3 concrete,
-   specific startup ideas. Each should be 2-3 sentences: what it is, who
+   specific startup ideas. Each should be 1-2 sentences: what it is, who
    it's for, and why today's data suggests the timing is right. Be
    opinionated and specific — avoid vague ideas like "an AI tool for X."
 
-Keep the whole email under 600 words total. If a section's raw data is
-thin or mostly "Unavailable today" notices, say so briefly rather than
-padding it out.
+Keep the whole email under 450 words total — this is a hard limit, not a
+suggestion. Being complete and finishing properly matters more than
+covering every possible item. If you're running long, cut an item rather
+than risk being cut off mid-sentence.
 
 STRICT OUTPUT RULES — read carefully, these are not optional:
 - Do NOT include a greeting, salutation, "Hey [Name]," sign-off, or any
@@ -283,7 +274,7 @@ HTML STRUCTURE:
             "contents": [
                 {"parts": [{"text": prompt}]}
             ],
-            "generationConfig": {"maxOutputTokens": 4000}
+            "generationConfig": {"maxOutputTokens": 8192}
         },
         timeout=60,
     )
