@@ -128,6 +128,35 @@ def fetch_g2_trending(limit=8):
 # INDIA-SPECIFIC SOURCES
 # ---------------------------------------------------------------------------
 
+def fetch_startup_india(limit=6):
+    """Startup India (Government of India flagship portal) blog/news.
+    Tries the known RSS feed first; falls back to a light scrape of the
+    blog listing page if the feed URL has moved (gov sites restructure
+    occasionally, so this is treated as fragile like the other scrapers)."""
+    feed = feedparser.parse("https://www.startupindia.gov.in/content/sih/en/rss.xml")
+    if feed.entries:
+        return [f"- {e.title} {e.link}" for e in feed.entries[:limit]]
+
+    # RSS returned nothing — fall back to scraping the blog page
+    resp = requests.get(
+        "https://www.startupindia.gov.in/content/sih/en/blogs.html",
+        headers=HEADERS, timeout=15,
+    )
+    soup = BeautifulSoup(resp.text, "lxml")
+    links = soup.select("a[href*='/blogs/']")[:limit]
+    seen, results = set(), []
+    for a in links:
+        title = a.get_text(strip=True)
+        href = a.get("href")
+        if title and href and href not in seen:
+            seen.add(href)
+            full_url = href if href.startswith("http") else f"https://www.startupindia.gov.in{href}"
+            results.append(f"- {title} {full_url}")
+    if not results:
+        raise RuntimeError("Neither RSS nor scrape fallback returned results")
+    return results
+
+
 def fetch_india_reddit(subreddits=("IndiaStartups", "india", "developersIndia", "IndianStreetBets"), limit=5):
     """Top daily posts from India-focused subreddits via RSS (same reasoning
     as fetch_reddit — RSS is less bot-protected than the .json endpoint)."""
@@ -469,6 +498,7 @@ def main():
     india_sections = [
         safe_fetch("Inc42", fetch_rss, "https://inc42.com/feed/"),
         safe_fetch("YourStory", fetch_rss, "https://yourstory.com/feed"),
+        safe_fetch("Startup India", fetch_startup_india),
         safe_fetch("Reddit India", fetch_india_reddit),
     ]
 

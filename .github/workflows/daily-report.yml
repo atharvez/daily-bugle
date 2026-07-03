@@ -10,9 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5.6.0
         with:
           python-version: '3.11'
 
@@ -28,7 +28,7 @@ jobs:
           TO_EMAIL: ${{ secrets.TO_EMAIL }}
 
       - name: Upload problem statements artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: problem-statements
           path: problem_statements.json
@@ -39,16 +39,16 @@ jobs:
     timeout-minutes: 15
     needs: run-report   # waits for job 1 to finish and produce the artifact
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5.6.0
         with:
           python-version: '3.11'
 
       - run: pip install -r requirements.txt
 
       - name: Download problem statements artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.3.0
         with:
           name: problem-statements
 
