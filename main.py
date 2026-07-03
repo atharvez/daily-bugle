@@ -10,6 +10,7 @@ the final email instead of crashing the job.
 """
 
 import os
+import json
 import smtplib
 import traceback
 from email.mime.text import MIMEText
@@ -60,29 +61,34 @@ def fetch_product_hunt(limit=8):
         headers={"Authorization": f"Bearer {token}"},
         timeout=15,
     ).json()
+
+    if "errors" in resp:
+        # PH returns a 200 with an "errors" array instead of raising an HTTP
+        # error, so we surface it explicitly rather than hitting a NoneType crash.
+        raise RuntimeError(f"Product Hunt API error: {resp['errors']}")
+    if not resp.get("data"):
+        raise RuntimeError(f"Product Hunt returned no data: {resp}")
+
     edges = resp["data"]["posts"]["edges"]
     return [f"- {e['node']['name']} — {e['node']['tagline']} "
             f"({e['node']['votesCount']} votes) {e['node']['url']}" for e in edges]
 
 
 def fetch_reddit(subreddits=("startups", "Entrepreneur"), limit=5):
-    """Top daily posts from given subreddits via Reddit's public JSON endpoint.
-    No auth/app registration required — works for read-only public data.
-    More rate-limit sensitive than the OAuth API, but fine for one daily pull.
-    If you later get API credentials, swap this for the OAuth version for
-    higher reliability."""
+    """Top daily posts via Reddit's public RSS feed.
+    GitHub Actions runner IPs are commonly blocked by Reddit's Cloudflare
+    protection on the .json endpoint regardless of headers used — the RSS
+    feed is less aggressively protected and works more reliably from
+    datacenter IPs. Still no auth required."""
     results = []
     for sub in subreddits:
-        resp = requests.get(
-            f"https://www.reddit.com/r/{sub}/top.json?t=day&limit={limit}",
-            headers=HEADERS, timeout=15,
+        feed = feedparser.parse(
+            f"https://www.reddit.com/r/{sub}/top/.rss?t=day&limit={limit}"
         )
-        resp.raise_for_status()
-        data = resp.json()
-        for post in data["data"]["children"]:
-            d = post["data"]
-            results.append(f"- [r/{sub}] {d['title']} ({d['ups']} upvotes) "
-                            f"https://reddit.com{d['permalink']}")
+        if not feed.entries:
+            raise RuntimeError(f"No entries returned for r/{sub} (possibly blocked)")
+        for entry in feed.entries[:limit]:
+            results.append(f"- [r/{sub}] {entry.title} {entry.link}")
     return results
 
 
@@ -119,8 +125,25 @@ def fetch_g2_trending(limit=8):
 
 
 # ---------------------------------------------------------------------------
-# VC INVESTMENT SOURCES
+# INDIA-SPECIFIC SOURCES
 # ---------------------------------------------------------------------------
+
+def fetch_india_reddit(subreddits=("IndiaStartups", "india"), limit=5):
+    """Top daily posts from India-focused subreddits via RSS (same reasoning
+    as fetch_reddit — RSS is less bot-protected than the .json endpoint)."""
+    results = []
+    for sub in subreddits:
+        feed = feedparser.parse(
+            f"https://www.reddit.com/r/{sub}/top/.rss?t=day&limit={limit}"
+        )
+        if not feed.entries:
+            raise RuntimeError(f"No entries returned for r/{sub} (possibly blocked)")
+        for entry in feed.entries[:limit]:
+            results.append(f"- [r/{sub}] {entry.title} {entry.link}")
+    return results
+
+
+
 
 def fetch_rss(url, limit=6):
     """Generic RSS fetcher — used for a16z and YC blog."""
@@ -177,23 +200,179 @@ def safe_fetch(name, fn, *args, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# AI SUMMARIZATION
+# PROBLEM STATEMENT EXTRACTION (feeds both the email and Agent 2's artifact)
 # ---------------------------------------------------------------------------
 
-def summarize_with_ai(startup_raw, vc_raw):
-    prompt = f"""You are producing a concise daily briefing for a startup founder.
+def extract_problem_statements(startup_raw, vc_raw, india_raw):
+    """Ask Gemini for a clean, structured JSON list of problem statements
+    found in today's raw data, each scored on severity and need, and
+    ranked. Used both to build the main email's Problem Statements section
+    and as a hand-off artifact for Agent 2, which searches adjacent domains
+    for related/similar problem statements."""
+    prompt = f"""Read the raw data below (Hacker News, Product Hunt, Reddit,
+Indie Hackers, G2, VC blogs, India-specific sources) and identify 2-3 clear,
+concrete PROBLEM STATEMENTS — real unmet needs or recurring frustrations
+people are expressing today. State each as a problem, not a solution.
 
-Below is raw scraped data from two categories. Write a clean, skimmable
-summary with two sections: "Startup Demand Signals" and "VC Investment
-Activity". Under each, pull out the 5-8 most notable/high-signal items,
-group related items together, drop noise/duplicates, and keep it under
-400 words total. Use short bullet points. Include source links where present.
+For each problem statement, also score it:
+- "severity" (1-10): how painful/costly this problem is for the people who
+  have it if left unsolved. 1 = mild annoyance, 10 = severe/blocking issue.
+- "need" (1-10): how strong and widespread the demand for a solution looks
+  based on today's evidence (repeated mentions, engagement, urgency of
+  language). 1 = niche/speculative interest, 10 = broad urgent demand.
+- "priority_score": severity + need, used for ranking (max 20).
+
+Sort the list by "priority_score" descending (highest priority first).
+
+Respond with ONLY valid JSON (no markdown fences, no commentary) in exactly
+this shape:
+[
+  {{"rank": 1, "statement": "...", "evidence": "one line of supporting evidence", "domain": "e.g. e-commerce, dev tools, fintech, etc.", "severity": 8, "need": 7, "priority_score": 15}}
+]
 
 === STARTUP DEMAND RAW DATA ===
 {startup_raw}
 
 === VC INVESTMENT RAW DATA ===
 {vc_raw}
+
+=== INDIA-SPECIFIC RAW DATA ===
+{india_raw}
+"""
+    api_key = os.environ["AI_API_KEY"]
+    model = "gemini-2.5-flash"
+    resp = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        headers={"content-type": "application/json"},
+        params={"key": api_key},
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": 1024},
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+    # Strip code fences if present, then parse
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3]
+    parsed = json.loads(text.strip())
+
+    # Defensive re-sort: don't rely solely on the model getting the order
+    # right. Sort by priority_score descending, then re-number rank 1..N.
+    parsed.sort(key=lambda p: p.get("priority_score", 0), reverse=True)
+    for i, p in enumerate(parsed, start=1):
+        p["rank"] = i
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# AI SUMMARIZATION
+# ---------------------------------------------------------------------------
+
+def summarize_with_ai(startup_raw, vc_raw, india_raw, problem_statements):
+    problem_statements_text = "\n".join(
+        f"- Rank #{p['rank']}: {p['statement']} "
+        f"(Evidence: {p['evidence']}; Domain: {p['domain']}; "
+        f"Severity: {p['severity']}/10; Need: {p['need']}/10; "
+        f"Priority Score: {p['priority_score']}/20)"
+        for p in problem_statements
+    ) or "No problem statements were extracted today."
+    prompt = f"""You are a sharp, well-read startup analyst writing a morning
+briefing email. Tone should be natural and conversational, like a smart
+person sharing genuinely interesting observations — not corporate, not
+robotic, but also not addressed to any named person.
+
+Write in a natural, conversational tone. Full sentences where they help,
+short punchy bullets where a list is clearer. No generic filler phrases
+like "in today's fast-paced world." Have an actual point of view — if
+something looks like noise, say so; if something looks like a real signal,
+say why.
+
+Structure the email in SIX sections, in this order:
+
+1. **What's Booming Right Now** — Look across all the raw data (HN, Product
+   Hunt, Reddit, Indie Hackers, G2) and identify 2-4 categories/niches that
+   show real momentum today (repeated themes, high engagement, multiple
+   independent mentions). Don't just list posts — synthesize the pattern.
+   E.g. "AI coding agents are having a moment again — three of today's top
+   HN posts and two PH launches are in this space."
+
+2. **Startup Demand Signals** — The 3-5 most notable individual items,
+   grouped sensibly, each with a one-line "why this matters" instead of
+   just a bare link. Include source links.
+
+3. **VC Investment Activity** — Same treatment for the VC-side raw data:
+   3-5 notable items, grouped, one line of context each, links included.
+
+4. **Problem Statements Worth Solving** — Present the problem statements
+   listed below (already extracted, scored, and ranked) in rank order,
+   each showing its rank, the statement, its evidence line, and its
+   Severity/Need/Priority scores clearly (e.g. as a small inline badge or
+   parenthetical like "Severity 8/10 · Need 7/10 · Priority 15/20"). Do
+   not invent new ones or re-score them — use exactly what's provided:
+   {problem_statements_text}
+
+5. **India Spotlight** — Using the India-specific raw data, cover what's
+   notable in the Indian startup/VC scene today: 2-4 items, grouped, one
+   line of context each, links included. If the India data is thin or
+   mostly unavailable, say so briefly rather than padding it out.
+
+6. **3 Startup Ideas Worth Considering** — Based on the gaps, complaints,
+   or unmet demand you can infer from today's data (including the problem
+   statements above), propose 3 concrete, specific startup ideas. Each
+   should be 1-2 sentences: what it is, who it's for, and why today's data
+   suggests the timing is right. Be opinionated and specific — avoid vague
+   ideas like "an AI tool for X."
+
+Keep the whole email under 550 words total — this is a hard limit, not a
+suggestion. Being complete and finishing properly matters more than
+covering every possible item. If you're running long, cut an item rather
+than risk being cut off mid-sentence.
+
+STRICT OUTPUT RULES — read carefully, these are not optional:
+- Do NOT include a greeting, salutation, "Hey [Name]," sign-off, or any
+  placeholder text like [Founder Friend's Name]. This is an automated
+  email with no recipient name available — never invent one or leave a
+  placeholder for one. Start directly with the content.
+- Do NOT include any preamble, meta-commentary, or explanation of what
+  you're about to do (e.g. no "Here's a rundown..." intro line).
+- Output ONLY valid HTML. Never mix in plain, untagged prose sentences —
+  every piece of visible text must be inside an HTML tag.
+- Never use Markdown syntax (*, #, -, backticks) anywhere in the output.
+- Never truncate mid-tag or mid-sentence — if you are running long, cut
+  content (drop an item or shorten a section) rather than cutting off
+  output partway through.
+- The very first characters of your response must be exactly: <div
+- The very last characters of your response must be exactly: </div>
+- Nothing may appear before the opening <div> or after the closing </div>
+  — no code fences, no commentary, nothing.
+
+HTML STRUCTURE:
+- Wrap everything in a single <div> with inline styles (no <html>/<head>/
+  <body> tags, no external CSS, no classes — this goes straight into an
+  email body).
+- Use <h2 style="..."> for the six section titles.
+- Use <p style="..."> for narrative paragraphs.
+- Use <ul><li style="..."> for bullet lists.
+- Use <a href="URL" style="color:#2563eb;"> for links, with real anchor
+  text (never show a bare raw URL as visible text).
+- Use <strong> for emphasis instead of markdown asterisks.
+- Keep inline styles minimal and email-safe: font-family: Arial, sans-serif;
+  font-size: 14px; line-height: 1.5; color: #1a1a1a; a bit of margin
+  between sections.
+
+=== STARTUP DEMAND RAW DATA ===
+{startup_raw}
+
+=== VC INVESTMENT RAW DATA ===
+{vc_raw}
+
+=== INDIA-SPECIFIC RAW DATA ===
+{india_raw}
 """
     api_key = os.environ["AI_API_KEY"]
     model = "gemini-2.5-flash"  # swap for another Gemini model if you prefer
@@ -204,22 +383,48 @@ group related items together, drop noise/duplicates, and keep it under
         json={
             "contents": [
                 {"parts": [{"text": prompt}]}
-            ]
+            ],
+            "generationConfig": {"maxOutputTokens": 8192}
         },
         timeout=60,
     )
     resp.raise_for_status()
     data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    candidate = data["candidates"][0]
+    finish_reason = candidate.get("finishReason", "")
+    if finish_reason == "MAX_TOKENS":
+        print("WARNING: Gemini response was truncated (hit MAX_TOKENS). "
+              "Consider shortening the requested content or raising maxOutputTokens further.")
+    return candidate["content"]["parts"][0]["text"]
 
 
 # ---------------------------------------------------------------------------
 # EMAIL
 # ---------------------------------------------------------------------------
 
-def send_email(body):
-    msg = MIMEText(body)
-    msg["Subject"] = "Daily Startup & VC Report"
+def send_email(html_body):
+    cleaned = html_body.strip()
+
+    # Strip ```html fences if present
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
+        if cleaned.rstrip().endswith("```"):
+            cleaned = cleaned.rstrip()[:-3]
+    cleaned = cleaned.strip()
+
+    # Hard safety net: extract only the outermost <div>...</div>, discarding
+    # any stray greeting/preamble text or trailing junk outside it, in case
+    # the model doesn't follow the "start/end exactly with div" instruction.
+    start = cleaned.find("<div")
+    end = cleaned.rfind("</div>")
+    if start != -1 and end != -1:
+        cleaned = cleaned[start:end + len("</div>")]
+    else:
+        print("WARNING: Could not find <div>...</div> boundaries in AI output — "
+              "sending as-is, formatting may be off.")
+
+    msg = MIMEText(cleaned, "html")
+    msg["Subject"] = "Your Morning Startup & VC Briefing"
     msg["From"] = os.environ["SMTP_USER"]
     msg["To"] = os.environ["TO_EMAIL"]
 
@@ -248,19 +453,41 @@ def main():
         safe_fetch("Peak XV", fetch_peakxv),
     ]
 
+    india_sections = [
+        safe_fetch("Inc42", fetch_rss, "https://inc42.com/feed/"),
+        safe_fetch("YourStory", fetch_rss, "https://yourstory.com/feed"),
+        safe_fetch("Reddit India", fetch_india_reddit),
+    ]
+
     startup_raw = "\n\n".join(startup_sections)
     vc_raw = "\n\n".join(vc_sections)
+    india_raw = "\n\n".join(india_sections)
 
     try:
-        summary = summarize_with_ai(startup_raw, vc_raw)
+        problem_statements = extract_problem_statements(startup_raw, vc_raw, india_raw)
+    except Exception as e:
+        print(f"Problem statement extraction failed: {e}")
+        traceback.print_exc()
+        problem_statements = []
+
+    # Save as a hand-off artifact for Agent 2, which runs after this job and
+    # searches adjacent domains for related problem statements.
+    with open("problem_statements.json", "w") as f:
+        json.dump(problem_statements, f, indent=2)
+
+    try:
+        summary = summarize_with_ai(startup_raw, vc_raw, india_raw, problem_statements)
     except Exception as e:
         print(f"AI summarization failed: {e}")
         traceback.print_exc()
         # Fall back to raw data if the AI step fails, so the email still sends
         summary = (
-            "AI summarization failed today — sending raw data instead.\n\n"
-            f"=== STARTUP DEMAND ===\n{startup_raw}\n\n"
-            f"=== VC INVESTMENT ===\n{vc_raw}"
+            "<div style='font-family:Arial,sans-serif;font-size:14px;'>"
+            "<p><strong>AI summarization failed today — sending raw data instead.</strong></p>"
+            f"<pre style='white-space:pre-wrap;font-family:monospace;font-size:12px;'>"
+            f"=== STARTUP DEMAND ===\n{startup_raw}\n\n=== VC INVESTMENT ===\n{vc_raw}\n\n"
+            f"=== INDIA ===\n{india_raw}"
+            f"</pre></div>"
         )
 
     send_email(summary)

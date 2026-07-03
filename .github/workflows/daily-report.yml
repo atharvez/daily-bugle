@@ -26,3 +26,36 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           TO_EMAIL: ${{ secrets.TO_EMAIL }}
+
+      - name: Upload problem statements artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: problem-statements
+          path: problem_statements.json
+          retention-days: 1
+
+  run-agent2-problem-finder:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: run-report   # waits for job 1 to finish and produce the artifact
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install -r requirements.txt
+
+      - name: Download problem statements artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: problem-statements
+
+      - name: Run agent 2 problem finder
+        run: python agent2_problem_finder.py
+        env:
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          TO_EMAIL: ${{ secrets.TO_EMAIL }}
