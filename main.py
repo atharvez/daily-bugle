@@ -203,6 +203,7 @@ def safe_fetch(name, fn, *args, **kwargs):
 # PROBLEM STATEMENT EXTRACTION (feeds both the email and Agent 2's artifact)
 # ---------------------------------------------------------------------------
 
+<<<<<<< HEAD
 def extract_problem_statements(startup_raw, vc_raw, india_raw):
     """Ask Gemini for a clean, structured JSON list of problem statements
     found in today's raw data, each scored on severity and need, and
@@ -229,6 +230,80 @@ this shape:
 [
   {{"rank": 1, "statement": "...", "evidence": "one line of supporting evidence", "domain": "e.g. e-commerce, dev tools, fintech, etc.", "severity": 8, "need": 7, "priority_score": 15}}
 ]
+=======
+def summarize_with_ai(startup_raw, vc_raw):
+    prompt = f"""You are a sharp, well-read startup analyst writing a morning
+briefing email. Tone should be natural and conversational, like a smart
+person sharing genuinely interesting observations — not corporate, not
+robotic, but also not addressed to any named person.
+
+Write in a natural, conversational tone. Full sentences where they help,
+short punchy bullets where a list is clearer. No generic filler phrases
+like "in today's fast-paced world." Have an actual point of view — if
+something looks like noise, say so; if something looks like a real signal,
+say why.
+
+Structure the email in FOUR sections, in this order:
+
+1. **What's Booming Right Now** — Look across all the raw data (HN, Product
+   Hunt, Reddit, Indie Hackers, G2) and identify 3-5 categories/niches that
+   show real momentum today (repeated themes, high engagement, multiple
+   independent mentions). Don't just list posts — synthesize the pattern.
+   E.g. "AI coding agents are having a moment again — three of today's top
+   HN posts and two PH launches are in this space."
+
+2. **Startup Demand Signals** — The 4-6 most notable individual items,
+   grouped sensibly, each with a one-line "why this matters" instead of
+   just a bare link. Include source links.
+
+3. **VC Investment Activity** — Same treatment for the VC-side raw data:
+   4-6 notable items, grouped, one line of context each, links included.
+
+4. **3 Startup Ideas Worth Considering** — Based on the gaps, complaints,
+   or unmet demand you can infer from today's data (e.g. a recurring
+   complaint on Reddit with no good product answering it, or a category
+   with rising interest but few strong players), propose 3 concrete,
+   specific startup ideas. Each should be 1-2 sentences: what it is, who
+   it's for, and why today's data suggests the timing is right. Be
+   opinionated and specific — avoid vague ideas like "an AI tool for X."
+
+Keep the whole email under 450 words total — this is a hard limit, not a
+suggestion. Being complete and finishing properly matters more than
+covering every possible item. If you're running long, cut an item rather
+than risk being cut off mid-sentence.
+
+STRICT OUTPUT RULES — read carefully, these are not optional:
+- Do NOT include a greeting, salutation, "Hey [Name]," sign-off, or any
+  placeholder text like [Founder Friend's Name]. This is an automated
+  email with no recipient name available — never invent one or leave a
+  placeholder for one. Start directly with the content.
+- Do NOT include any preamble, meta-commentary, or explanation of what
+  you're about to do (e.g. no "Here's a rundown..." intro line).
+- Output ONLY valid HTML. Never mix in plain, untagged prose sentences —
+  every piece of visible text must be inside an HTML tag.
+- Never use Markdown syntax (*, #, -, backticks) anywhere in the output.
+- Never truncate mid-tag or mid-sentence — if you are running long, cut
+  content (drop an item or shorten a section) rather than cutting off
+  output partway through.
+- The very first characters of your response must be exactly: <div
+- The very last characters of your response must be exactly: </div>
+- Nothing may appear before the opening <div> or after the closing </div>
+  — no code fences, no commentary, nothing.
+
+HTML STRUCTURE:
+- Wrap everything in a single <div> with inline styles (no <html>/<head>/
+  <body> tags, no external CSS, no classes — this goes straight into an
+  email body).
+- Use <h2 style="..."> for the four section titles.
+- Use <p style="..."> for narrative paragraphs.
+- Use <ul><li style="..."> for bullet lists.
+- Use <a href="URL" style="color:#2563eb;"> for links, with real anchor
+  text (never show a bare raw URL as visible text).
+- Use <strong> for emphasis instead of markdown asterisks.
+- Keep inline styles minimal and email-safe: font-family: Arial, sans-serif;
+  font-size: 14px; line-height: 1.5; color: #1a1a1a; a bit of margin
+  between sections.
+>>>>>>> 3d7fe19e814dc23ecea11ef4873495408aa27bfb
 
 === STARTUP DEMAND RAW DATA ===
 {startup_raw}
@@ -485,8 +560,12 @@ def main():
             "<div style='font-family:Arial,sans-serif;font-size:14px;'>"
             "<p><strong>AI summarization failed today — sending raw data instead.</strong></p>"
             f"<pre style='white-space:pre-wrap;font-family:monospace;font-size:12px;'>"
+<<<<<<< HEAD
             f"=== STARTUP DEMAND ===\n{startup_raw}\n\n=== VC INVESTMENT ===\n{vc_raw}\n\n"
             f"=== INDIA ===\n{india_raw}"
+=======
+            f"=== STARTUP DEMAND ===\n{startup_raw}\n\n=== VC INVESTMENT ===\n{vc_raw}"
+>>>>>>> 3d7fe19e814dc23ecea11ef4873495408aa27bfb
             f"</pre></div>"
         )
 
