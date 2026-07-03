@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Daily Startup & VC Report
 Pulls signals from YC/HN, Product Hunt, Reddit, Indie Hackers, G2 (startup demand)
@@ -129,7 +128,7 @@ def fetch_g2_trending(limit=8):
 # INDIA-SPECIFIC SOURCES
 # ---------------------------------------------------------------------------
 
-def fetch_india_reddit(subreddits=("IndiaStartups", "india"), limit=5):
+def fetch_india_reddit(subreddits=("IndiaStartups", "india", "developersIndia", "IndianStreetBets"), limit=5):
     """Top daily posts from India-focused subreddits via RSS (same reasoning
     as fetch_reddit — RSS is less bot-protected than the .json endpoint)."""
     results = []
@@ -205,15 +204,26 @@ def safe_fetch(name, fn, *args, **kwargs):
 # ---------------------------------------------------------------------------
 
 def extract_problem_statements(startup_raw, vc_raw, india_raw):
-    """Ask Gemini for a clean, structured JSON list of problem statements
-    found in today's raw data, each scored on severity and need, and
-    ranked. Used both to build the main email's Problem Statements section
-    and as a hand-off artifact for Agent 2, which searches adjacent domains
-    for related/similar problem statements."""
-    prompt = f"""Read the raw data below (Hacker News, Product Hunt, Reddit,
-Indie Hackers, G2, VC blogs, India-specific sources) and identify 2-3 clear,
-concrete PROBLEM STATEMENTS — real unmet needs or recurring frustrations
-people are expressing today. State each as a problem, not a solution.
+    """Ask Gemini for a clean, structured JSON list of INDIA-CENTRIC problem
+    statements, each scored on severity and need, and ranked. Used both to
+    build the main email's Problem Statements section and as a hand-off
+    artifact for Agent 2, which searches adjacent domains for related/
+    similar problem statements."""
+    prompt = f"""Read the raw data below and identify 2-3 clear, concrete
+INDIA-CENTRIC PROBLEM STATEMENTS — real unmet needs or recurring
+frustrations relevant to Indian consumers, businesses, or the Indian
+startup/VC ecosystem specifically. State each as a problem, not a solution.
+
+Primary source: the INDIA-SPECIFIC RAW DATA section (Inc42, YourStory,
+r/IndiaStartups, r/india) — draw most of your problem statements from
+here. You may also pull from the general startup/VC data ONLY if an item
+is clearly relevant to the Indian market (e.g. an India-based company, an
+India-focused VC move, or a global trend with an obvious India angle) —
+skip anything with no India relevance.
+
+If the India-specific data is too thin today to support 2-3 genuine
+India-centric problem statements, return fewer rather than stretching or
+inventing weak connections — quality and relevance over quantity.
 
 For each problem statement, also score it:
 - "severity" (1-10): how painful/costly this problem is for the people who
@@ -309,12 +319,13 @@ Structure the email in SIX sections, in this order:
 3. **VC Investment Activity** — Same treatment for the VC-side raw data:
    3-5 notable items, grouped, one line of context each, links included.
 
-4. **Problem Statements Worth Solving** — Present the problem statements
-   listed below (already extracted, scored, and ranked) in rank order,
-   each showing its rank, the statement, its evidence line, and its
-   Severity/Need/Priority scores clearly (e.g. as a small inline badge or
-   parenthetical like "Severity 8/10 · Need 7/10 · Priority 15/20"). Do
-   not invent new ones or re-score them — use exactly what's provided:
+4. **India-Centric Problem Statements Worth Solving** — Present the
+   problem statements listed below (already extracted, scored, and ranked,
+   focused specifically on the Indian market) in rank order, each showing
+   its rank, the statement, its evidence line, and its Severity/Need/
+   Priority scores clearly (e.g. as a small inline badge or parenthetical
+   like "Severity 8/10 · Need 7/10 · Priority 15/20"). Do not invent new
+   ones or re-score them — use exactly what's provided:
    {problem_statements_text}
 
 5. **India Spotlight** — Using the India-specific raw data, cover what's
@@ -323,11 +334,12 @@ Structure the email in SIX sections, in this order:
    mostly unavailable, say so briefly rather than padding it out.
 
 6. **3 Startup Ideas Worth Considering** — Based on the gaps, complaints,
-   or unmet demand you can infer from today's data (including the problem
-   statements above), propose 3 concrete, specific startup ideas. Each
-   should be 1-2 sentences: what it is, who it's for, and why today's data
-   suggests the timing is right. Be opinionated and specific — avoid vague
-   ideas like "an AI tool for X."
+   or unmet demand you can infer from today's data (including the India-
+   centric problem statements above), propose 3 concrete, specific startup
+   ideas — at least 1-2 of which should directly address the India-centric
+   problem statements listed. Each should be 1-2 sentences: what it is,
+   who it's for, and why today's data suggests the timing is right. Be
+   opinionated and specific — avoid vague ideas like "an AI tool for X."
 
 Keep the whole email under 550 words total — this is a hard limit, not a
 suggestion. Being complete and finishing properly matters more than

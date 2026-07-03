@@ -146,7 +146,7 @@ def send_email(html_body):
         print("WARNING: Could not find <div>...</div> boundaries — sending as-is.")
 
     msg = MIMEText(cleaned, "html")
-    msg["Subject"] = "Similar Problem Statements — Adjacent Domains"
+    msg["Subject"] = "Similar Problem Statements — India-Centric, Adjacent Domains"
     msg["From"] = os.environ["SMTP_USER"]
     msg["To"] = os.environ["TO_EMAIL"]
 
