@@ -269,17 +269,10 @@ def _call_gemini_json(prompt, api_key, max_tokens=1024):
 
 
 def extract_problem_statements(startup_raw, vc_raw, india_raw):
-    """Ask Gemini for a clean, structured JSON list of INDIA-CENTRIC problem
-    statements, each scored on severity and need, and ranked. Used both to
-    build the main email's Problem Statements section and as a hand-off
-    artifact for Agent 2, which searches adjacent domains for related/
-    similar problem statements.
-
-    Two-pass strategy:
-      Pass 1: India-centric sources preferred.
-      Pass 2 (fallback): If pass 1 returns [], relax constraints and draw
-              from ALL available data so the email is never empty.
-    """
+    """Ask Gemini for a structured JSON list of problem statements drawn from
+    ALL sources (startup demand, VC signals, and India-specific data), scored
+    on severity and need, and ranked. Used both to build the main email's
+    Problem Statements section and as a hand-off artifact for Agent 2."""
     api_key = os.environ["AI_API_KEY"]
 
     SCHEMA = (
@@ -287,22 +280,18 @@ def extract_problem_statements(startup_raw, vc_raw, india_raw):
         '"domain": "e.g. fintech", "severity": 8, "need": 7, "priority_score": 15}]'
     )
 
-    # ---- Pass 1: India-centric ----
-    prompt1 = f"""Read the raw data below and identify 2-3 clear, concrete
-INDIA-CENTRIC PROBLEM STATEMENTS — real unmet needs or recurring frustrations
-relevant to Indian consumers, businesses, or the Indian startup/VC ecosystem.
-State each as a problem, not a solution.
-
-Primary source: INDIA-SPECIFIC RAW DATA (Inc42, YourStory, r/IndiaStartups,
-r/india). Also pull from the general data ONLY if clearly India-relevant.
-If India data is thin, return fewer items — do not invent connections.
+    prompt = f"""Read all the raw data below and identify 3-5 clear, concrete
+PROBLEM STATEMENTS — real unmet needs or recurring frustrations visible in
+today's startup, VC, and tech community data. State each as a problem, not
+a solution. Draw from any source — HN, Product Hunt, Reddit, VC blogs,
+Indie Hackers, India-specific feeds — wherever the strongest signal is.
 
 For each, score:
-- severity (1-10): pain if unsolved
-- need (1-10): breadth/urgency of demand from today's evidence
-- priority_score: severity + need
+- severity (1-10): how painful the problem is if left unsolved
+- need (1-10): breadth and urgency of demand based on today's evidence
+- priority_score: severity + need (max 20)
 
-Sort descending by priority_score.
+Sort descending by priority_score. Return only the top 3-5.
 Respond ONLY with valid JSON, no markdown fences, no commentary:
 {SCHEMA}
 
@@ -312,48 +301,19 @@ Respond ONLY with valid JSON, no markdown fences, no commentary:
 === VC INVESTMENT RAW DATA ===
 {vc_raw}
 
-=== INDIA-SPECIFIC RAW DATA ===
+=== ADDITIONAL SIGNALS RAW DATA ===
 {india_raw}
 """
 
-    text1 = _call_gemini_json(prompt1, api_key)
+    text = _call_gemini_json(prompt, api_key)
     try:
-        parsed = json.loads(text1)
+        parsed = json.loads(text)
     except json.JSONDecodeError as e:
-        print(f"[extract_problem_statements] Pass 1 JSON parse error: {e}\nRaw text: {text1}")
+        print(f"[extract_problem_statements] JSON parse error: {e}\nRaw text: {text}")
         parsed = []
 
-    # ---- Pass 2: Permissive fallback if Pass 1 returned nothing ----
     if not parsed:
-        print("[extract_problem_statements] Pass 1 returned empty — running permissive fallback.")
-        prompt2 = f"""The India-specific data sources may be sparse today.
-Using ALL the raw data below, identify 2-3 problem statements that would
-relevant to building a startup product — they don't need to be India-exclusive,
-but prefer ones with an India angle if any exists.
-
-For each, score severity, need, priority_score (same 1-10 scale).
-Sort descending by priority_score.
-Respond ONLY with valid JSON, no markdown fences:
-{SCHEMA}
-
-=== STARTUP DEMAND RAW DATA ===
-{startup_raw}
-
-=== VC INVESTMENT RAW DATA ===
-{vc_raw}
-
-=== INDIA-SPECIFIC RAW DATA ===
-{india_raw}
-"""
-        text2 = _call_gemini_json(prompt2, api_key)
-        try:
-            parsed = json.loads(text2)
-        except json.JSONDecodeError as e:
-            print(f"[extract_problem_statements] Pass 2 JSON parse error: {e}\nRaw text: {text2}")
-            parsed = []
-
-    if not parsed:
-        print("[extract_problem_statements] Both passes returned empty — no problem statements today.")
+        print("[extract_problem_statements] Extraction returned empty — no problem statements today.")
         return []
 
     # Defensive re-sort and re-number
@@ -403,13 +363,12 @@ Structure the email in SIX sections, in this order:
 3. **VC Investment Activity** — Same treatment for the VC-side raw data:
    3-5 notable items, grouped, one line of context each, links included.
 
-4. **India-Centric Problem Statements Worth Solving** — Present the
-   problem statements listed below (already extracted, scored, and ranked,
-   focused specifically on the Indian market) in rank order, each showing
-   its rank, the statement, its evidence line, and its Severity/Need/
-   Priority scores clearly (e.g. as a small inline badge or parenthetical
-   like "Severity 8/10 · Need 7/10 · Priority 15/20"). Do not invent new
-   ones or re-score them — use exactly what's provided:
+4. **Problem Statements Worth Solving** — Present the problem statements
+   listed below (already extracted, scored, and ranked from today's data)
+   in rank order, each showing its rank, the statement, its evidence line,
+   and its Severity/Need/Priority scores clearly (e.g. as a small inline
+   badge or parenthetical like "Severity 8/10 · Need 7/10 · Priority 15/20").
+   Do not invent new ones or re-score them — use exactly what's provided:
    {problem_statements_text}
 
 5. **India Spotlight** — Using the India-specific raw data, cover what's
@@ -418,12 +377,11 @@ Structure the email in SIX sections, in this order:
    mostly unavailable, say so briefly rather than padding it out.
 
 6. **3 Startup Ideas Worth Considering** — Based on the gaps, complaints,
-   or unmet demand you can infer from today's data (including the India-
-   centric problem statements above), propose 3 concrete, specific startup
-   ideas — at least 1-2 of which should directly address the India-centric
-   problem statements listed. Each should be 1-2 sentences: what it is,
-   who it's for, and why today's data suggests the timing is right. Be
-   opinionated and specific — avoid vague ideas like "an AI tool for X."
+   or unmet demand visible in today's data (including the problem statements
+   above), propose 3 concrete, specific startup ideas. Each should be 1-2
+   sentences: what it is, who it's for, and why today's data suggests the
+   timing is right. Be opinionated and specific — avoid vague ideas like
+   "an AI tool for X."
 
 Keep the whole email under 550 words total — this is a hard limit, not a
 suggestion. Being complete and finishing properly matters more than

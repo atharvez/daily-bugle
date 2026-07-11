@@ -296,11 +296,11 @@ def load_problem_statements(path="problem_statements.json"):
 # ---------------------------------------------------------------------------
 
 def summarize_with_ai(findings_raw):
-    prompt = f"""You are a startup analyst. Below is a set of INDIA-CENTRIC original
-problem statements (found in today's main startup/VC data pull, already
-ranked by priority with severity and need scores) paired with raw search
-results of similar/related problem statements found in adjacent domains
-(HN, Reddit, Quora, StackExchange, Dev.to, DuckDuckGo).
+    prompt = f"""You are a startup analyst. Below is a set of original
+problem statements (extracted from today's startup, VC, and tech community
+data, already ranked by priority with severity and need scores) paired with
+raw search results of similar/related problem statements found in adjacent
+domains (HN, Reddit, Quora, StackExchange, Dev.to, DuckDuckGo).
 
 Process the problem statements IN RANK ORDER (highest priority first, as
 given). For each, write a short section: restate the original problem in
@@ -379,7 +379,7 @@ def send_email(html_body):
         print("WARNING: Could not find <div>...</div> boundaries — sending as-is.")
 
     msg = MIMEText(cleaned, "html")
-    msg["Subject"] = "Similar Problem Statements — Adjacent Domains (Agent 2)"
+    msg["Subject"] = "Similar Problem Statements — Adjacent Domains"
     msg["From"] = os.environ["SMTP_USER"]
     msg["To"] = os.environ["TO_EMAIL"]
 
