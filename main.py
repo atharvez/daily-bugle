@@ -232,43 +232,79 @@ def safe_fetch(name, fn, *args, **kwargs):
 # PROBLEM STATEMENT EXTRACTION (feeds both the email and Agent 2's artifact)
 # ---------------------------------------------------------------------------
 
+def _strip_json_fences(text):
+    """Strip all variants of markdown code fences from an AI JSON response.
+    Handles: ```json, ```JSON, ``` (bare), with or without trailing fence."""
+    text = text.strip()
+    if text.startswith("```"):
+        # Drop the opening fence line (e.g. ```json or just ```)
+        first_newline = text.find("\n")
+        if first_newline != -1:
+            text = text[first_newline + 1:]
+        else:
+            text = text[3:]  # bare ``` with no newline
+        # Drop trailing closing fence
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3]
+    return text.strip()
+
+
+def _call_gemini_json(prompt, api_key, max_tokens=1024):
+    """POST to Gemini and return the stripped text response."""
+    model = "gemini-2.5-flash"
+    resp = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        headers={"content-type": "application/json"},
+        params={"key": api_key},
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": max_tokens},
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+    print(f"[extract_problem_statements] Raw AI response (first 500 chars):\n{raw[:500]}")
+    return _strip_json_fences(raw)
+
+
 def extract_problem_statements(startup_raw, vc_raw, india_raw):
     """Ask Gemini for a clean, structured JSON list of INDIA-CENTRIC problem
     statements, each scored on severity and need, and ranked. Used both to
     build the main email's Problem Statements section and as a hand-off
     artifact for Agent 2, which searches adjacent domains for related/
-    similar problem statements."""
-    prompt = f"""Read the raw data below and identify 2-3 clear, concrete
-INDIA-CENTRIC PROBLEM STATEMENTS — real unmet needs or recurring
-frustrations relevant to Indian consumers, businesses, or the Indian
-startup/VC ecosystem specifically. State each as a problem, not a solution.
+    similar problem statements.
 
-Primary source: the INDIA-SPECIFIC RAW DATA section (Inc42, YourStory,
-r/IndiaStartups, r/india) — draw most of your problem statements from
-here. You may also pull from the general startup/VC data ONLY if an item
-is clearly relevant to the Indian market (e.g. an India-based company, an
-India-focused VC move, or a global trend with an obvious India angle) —
-skip anything with no India relevance.
+    Two-pass strategy:
+      Pass 1: India-centric sources preferred.
+      Pass 2 (fallback): If pass 1 returns [], relax constraints and draw
+              from ALL available data so the email is never empty.
+    """
+    api_key = os.environ["AI_API_KEY"]
 
-If the India-specific data is too thin today to support 2-3 genuine
-India-centric problem statements, return fewer rather than stretching or
-inventing weak connections — quality and relevance over quantity.
+    SCHEMA = (
+        '[{"rank": 1, "statement": "...", "evidence": "one line", '
+        '"domain": "e.g. fintech", "severity": 8, "need": 7, "priority_score": 15}]'
+    )
 
-For each problem statement, also score it:
-- "severity" (1-10): how painful/costly this problem is for the people who
-  have it if left unsolved. 1 = mild annoyance, 10 = severe/blocking issue.
-- "need" (1-10): how strong and widespread the demand for a solution looks
-  based on today's evidence (repeated mentions, engagement, urgency of
-  language). 1 = niche/speculative interest, 10 = broad urgent demand.
-- "priority_score": severity + need, used for ranking (max 20).
+    # ---- Pass 1: India-centric ----
+    prompt1 = f"""Read the raw data below and identify 2-3 clear, concrete
+INDIA-CENTRIC PROBLEM STATEMENTS — real unmet needs or recurring frustrations
+relevant to Indian consumers, businesses, or the Indian startup/VC ecosystem.
+State each as a problem, not a solution.
 
-Sort the list by "priority_score" descending (highest priority first).
+Primary source: INDIA-SPECIFIC RAW DATA (Inc42, YourStory, r/IndiaStartups,
+r/india). Also pull from the general data ONLY if clearly India-relevant.
+If India data is thin, return fewer items — do not invent connections.
 
-Respond with ONLY valid JSON (no markdown fences, no commentary) in exactly
-this shape:
-[
-  {{"rank": 1, "statement": "...", "evidence": "one line of supporting evidence", "domain": "e.g. e-commerce, dev tools, fintech, etc.", "severity": 8, "need": 7, "priority_score": 15}}
-]
+For each, score:
+- severity (1-10): pain if unsolved
+- need (1-10): breadth/urgency of demand from today's evidence
+- priority_score: severity + need
+
+Sort descending by priority_score.
+Respond ONLY with valid JSON, no markdown fences, no commentary:
+{SCHEMA}
 
 === STARTUP DEMAND RAW DATA ===
 {startup_raw}
@@ -279,33 +315,52 @@ this shape:
 === INDIA-SPECIFIC RAW DATA ===
 {india_raw}
 """
-    api_key = os.environ["AI_API_KEY"]
-    model = "gemini-2.5-flash"
-    resp = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        headers={"content-type": "application/json"},
-        params={"key": api_key},
-        json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"maxOutputTokens": 1024},
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-    # Strip code fences if present, then parse
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text
-        if text.rstrip().endswith("```"):
-            text = text.rstrip()[:-3]
-    parsed = json.loads(text.strip())
+    text1 = _call_gemini_json(prompt1, api_key)
+    try:
+        parsed = json.loads(text1)
+    except json.JSONDecodeError as e:
+        print(f"[extract_problem_statements] Pass 1 JSON parse error: {e}\nRaw text: {text1}")
+        parsed = []
 
-    # Defensive re-sort: don't rely solely on the model getting the order
-    # right. Sort by priority_score descending, then re-number rank 1..N.
+    # ---- Pass 2: Permissive fallback if Pass 1 returned nothing ----
+    if not parsed:
+        print("[extract_problem_statements] Pass 1 returned empty — running permissive fallback.")
+        prompt2 = f"""The India-specific data sources may be sparse today.
+Using ALL the raw data below, identify 2-3 problem statements that would
+relevant to building a startup product — they don't need to be India-exclusive,
+but prefer ones with an India angle if any exists.
+
+For each, score severity, need, priority_score (same 1-10 scale).
+Sort descending by priority_score.
+Respond ONLY with valid JSON, no markdown fences:
+{SCHEMA}
+
+=== STARTUP DEMAND RAW DATA ===
+{startup_raw}
+
+=== VC INVESTMENT RAW DATA ===
+{vc_raw}
+
+=== INDIA-SPECIFIC RAW DATA ===
+{india_raw}
+"""
+        text2 = _call_gemini_json(prompt2, api_key)
+        try:
+            parsed = json.loads(text2)
+        except json.JSONDecodeError as e:
+            print(f"[extract_problem_statements] Pass 2 JSON parse error: {e}\nRaw text: {text2}")
+            parsed = []
+
+    if not parsed:
+        print("[extract_problem_statements] Both passes returned empty — no problem statements today.")
+        return []
+
+    # Defensive re-sort and re-number
     parsed.sort(key=lambda p: p.get("priority_score", 0), reverse=True)
     for i, p in enumerate(parsed, start=1):
         p["rank"] = i
+    print(f"[extract_problem_statements] Extracted {len(parsed)} problem statement(s).")
     return parsed
 
 
