@@ -1,4 +1,4 @@
-"""
+﻿"""
 Daily Startup & VC Report
 Pulls signals from YC/HN, Product Hunt, Reddit, Indie Hackers, G2 (startup demand)
 and a16z, Sequoia, Peak XV, YC blog (VC investment activity), summarizes with an
@@ -329,96 +329,43 @@ Respond ONLY with valid JSON, no markdown fences, no commentary:
 # ---------------------------------------------------------------------------
 
 def summarize_with_ai(startup_raw, vc_raw, india_raw, problem_statements):
-    problem_statements_text = "\n".join(
-        f"- Rank #{p['rank']}: {p['statement']} "
-        f"(Evidence: {p['evidence']}; Domain: {p['domain']}; "
-        f"Severity: {p['severity']}/10; Need: {p['need']}/10; "
-        f"Priority Score: {p['priority_score']}/20)"
+    """Ask Gemini for the 6 content sections as a JSON object.
+    No HTML in the prompt — formatting is handled entirely by build_email_html()."""
+    ps_lines = "\n".join(
+        f"  Rank #{p['rank']}: {p['statement']} "
+        f"| Domain: {p['domain']} | Evidence: {p['evidence']} "
+        f"| Severity: {p['severity']}/10 | Need: {p['need']}/10 "
+        f"| Priority: {p['priority_score']}/20"
         for p in problem_statements
-    ) or "No problem statements were extracted today."
-    prompt = f"""You are a sharp, well-read startup analyst writing a morning
-briefing email. Tone should be natural and conversational, like a smart
-person sharing genuinely interesting observations — not corporate, not
-robotic, but also not addressed to any named person.
+    ) or "  No problem statements extracted today."
 
-Write in a natural, conversational tone. Full sentences where they help,
-short punchy bullets where a list is clearer. No generic filler phrases
-like "in today's fast-paced world." Have an actual point of view — if
-something looks like noise, say so; if something looks like a real signal,
-say why.
+    prompt = f"""You are a sharp startup analyst. Using the raw data below, write
+content for SIX sections of a daily briefing. Return ONLY a valid JSON object
+(no markdown fences, no commentary) with exactly these six keys:
 
-Structure the email in SIX sections, in this order:
+{{
+  "booming": "...",
+  "demand": "...",
+  "vc": "...",
+  "problems": "...",
+  "india": "...",
+  "ideas": "..."
+}}
 
-1. **What's Booming Right Now** — Look across all the raw data (HN, Product
-   Hunt, Reddit, Indie Hackers, G2) and identify 2-4 categories/niches that
-   show real momentum today (repeated themes, high engagement, multiple
-   independent mentions). Don't just list posts — synthesize the pattern.
-   E.g. "AI coding agents are having a moment again — three of today's top
-   HN posts and two PH launches are in this space."
+Guidelines per key (each value is a short HTML fragment — only <p>, <ul>, <li>,
+<strong>, <a href="URL"> tags; no wrapper divs, no inline styles):
 
-2. **Startup Demand Signals** — The 3-5 most notable individual items,
-   grouped sensibly, each with a one-line "why this matters" instead of
-   just a bare link. Include source links.
+"booming": 2-4 trends with real cross-source momentum. Synthesize — don't list.
+"demand":  3-5 notable items, each as a <li> with a one-liner and a source link.
+"vc":      3-5 VC items, same <li> format with links.
+"problems": Use EXACTLY the ranked problem statements below — do not invent or
+            re-score. Present each as a <li> with rank, statement, evidence, scores.
+{ps_lines}
+"india":   2-4 India-specific items as <li> with links. If data is thin, say so.
+"ideas":   3 concrete startup ideas as <li>. Each: idea name in <strong>,
+           then 1-2 sentences on who it's for and why the timing is right.
 
-3. **VC Investment Activity** — Same treatment for the VC-side raw data:
-   3-5 notable items, grouped, one line of context each, links included.
-
-4. **Problem Statements Worth Solving** — Present the problem statements
-   listed below (already extracted, scored, and ranked from today's data)
-   in rank order, each showing its rank, the statement, its evidence line,
-   and its Severity/Need/Priority scores clearly (e.g. as a small inline
-   badge or parenthetical like "Severity 8/10 · Need 7/10 · Priority 15/20").
-   Do not invent new ones or re-score them — use exactly what's provided:
-   {problem_statements_text}
-
-5. **India Spotlight** — Using the India-specific raw data, cover what's
-   notable in the Indian startup/VC scene today: 2-4 items, grouped, one
-   line of context each, links included. If the India data is thin or
-   mostly unavailable, say so briefly rather than padding it out.
-
-6. **3 Startup Ideas Worth Considering** — Based on the gaps, complaints,
-   or unmet demand visible in today's data (including the problem statements
-   above), propose 3 concrete, specific startup ideas. Each should be 1-2
-   sentences: what it is, who it's for, and why today's data suggests the
-   timing is right. Be opinionated and specific — avoid vague ideas like
-   "an AI tool for X."
-
-Keep the whole email under 550 words total — this is a hard limit, not a
-suggestion. Being complete and finishing properly matters more than
-covering every possible item. If you're running long, cut an item rather
-than risk being cut off mid-sentence.
-
-STRICT OUTPUT RULES — read carefully, these are not optional:
-- Do NOT include a greeting, salutation, "Hey [Name]," sign-off, or any
-  placeholder text like [Founder Friend's Name]. This is an automated
-  email with no recipient name available — never invent one or leave a
-  placeholder for one. Start directly with the content.
-- Do NOT include any preamble, meta-commentary, or explanation of what
-  you're about to do (e.g. no "Here's a rundown..." intro line).
-- Output ONLY valid HTML. Never mix in plain, untagged prose sentences —
-  every piece of visible text must be inside an HTML tag.
-- Never use Markdown syntax (*, #, -, backticks) anywhere in the output.
-- Never truncate mid-tag or mid-sentence — if you are running long, cut
-  content (drop an item or shorten a section) rather than cutting off
-  output partway through.
-- The very first characters of your response must be exactly: <div
-- The very last characters of your response must be exactly: </div>
-- Nothing may appear before the opening <div> or after the closing </div>
-  — no code fences, no commentary, nothing.
-
-HTML STRUCTURE:
-- Wrap everything in a single <div> with inline styles (no <html>/<head>/
-  <body> tags, no external CSS, no classes — this goes straight into an
-  email body).
-- Use <h2 style="..."> for the six section titles.
-- Use <p style="..."> for narrative paragraphs.
-- Use <ul><li style="..."> for bullet lists.
-- Use <a href="URL" style="color:#2563eb;"> for links, with real anchor
-  text (never show a bare raw URL as visible text).
-- Use <strong> for emphasis instead of markdown asterisks.
-- Keep inline styles minimal and email-safe: font-family: Arial, sans-serif;
-  font-size: 14px; line-height: 1.5; color: #1a1a1a; a bit of margin
-  between sections.
+Tone: direct, opinionated analyst. No filler. No greetings. Under 600 words total.
 
 === STARTUP DEMAND RAW DATA ===
 {startup_raw}
@@ -426,59 +373,126 @@ HTML STRUCTURE:
 === VC INVESTMENT RAW DATA ===
 {vc_raw}
 
-=== INDIA-SPECIFIC RAW DATA ===
+=== ADDITIONAL SIGNALS RAW DATA ===
 {india_raw}
 """
+
     api_key = os.environ["AI_API_KEY"]
-    model = "gemini-2.5-flash"  # swap for another Gemini model if you prefer
+    model = "gemini-2.5-flash"
     resp = requests.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         headers={"content-type": "application/json"},
         params={"key": api_key},
         json={
-            "contents": [
-                {"parts": [{"text": prompt}]}
-            ],
-            "generationConfig": {"maxOutputTokens": 8192}
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": 4096},
         },
         timeout=60,
     )
     resp.raise_for_status()
-    data = resp.json()
-    candidate = data["candidates"][0]
-    finish_reason = candidate.get("finishReason", "")
-    if finish_reason == "MAX_TOKENS":
-        print("WARNING: Gemini response was truncated (hit MAX_TOKENS). "
-              "Consider shortening the requested content or raising maxOutputTokens further.")
-    return candidate["content"]["parts"][0]["text"]
+    candidate = resp.json()["candidates"][0]
+    if candidate.get("finishReason") == "MAX_TOKENS":
+        print("WARNING: Gemini summarization truncated (MAX_TOKENS).")
+    raw = candidate["content"]["parts"][0]["text"]
+    print(f"[summarize_with_ai] Raw response (first 300 chars): {raw[:300]}")
+    return _strip_json_fences(raw)
 
 
 # ---------------------------------------------------------------------------
-# EMAIL
+# HTML TEMPLATE — built entirely in Python, AI only fills the content
 # ---------------------------------------------------------------------------
 
-def send_email(html_body):
-    cleaned = html_body.strip()
+def build_email_html(sections: dict, problem_statements: list) -> str:
+    """Render a fully styled email from the AI's section content dict."""
+    import datetime
+    date_str = datetime.datetime.utcnow().strftime("%A, %d %B %Y")
 
-    # Strip ```html fences if present
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
-        if cleaned.rstrip().endswith("```"):
-            cleaned = cleaned.rstrip()[:-3]
-    cleaned = cleaned.strip()
+    def card(title, color, body):
+        return (
+            f'<div style="background:#ffffff;border-radius:8px;border:1px solid #e5e7eb;'
+            f'border-top:4px solid {color};padding:20px 24px;margin-bottom:16px;'
+            f'box-shadow:0 1px 3px rgba(0,0,0,0.06);">'
+            f'<h2 style="margin:0 0 12px 0;font-size:15px;font-weight:700;color:#111827;'
+            f'letter-spacing:-0.2px;">{title}</h2>'
+            f'{body}</div>'
+        )
 
-    # Hard safety net: extract only the outermost <div>...</div>, discarding
-    # any stray greeting/preamble text or trailing junk outside it, in case
-    # the model doesn't follow the "start/end exactly with div" instruction.
-    start = cleaned.find("<div")
-    end = cleaned.rfind("</div>")
-    if start != -1 and end != -1:
-        cleaned = cleaned[start:end + len("</div>")]
-    else:
-        print("WARNING: Could not find <div>...</div> boundaries in AI output — "
-              "sending as-is, formatting may be off.")
+    def list_wrap(inner_html):
+        """Wrap raw <li> fragments in a styled <ul>."""
+        if "<li" in inner_html and "<ul" not in inner_html:
+            return (
+                '<ul style="margin:0;padding:0 0 0 18px;">'
+                + inner_html.replace("<li", '<li style="margin-bottom:10px;color:#374151;"')
+                + "</ul>"
+            )
+        return inner_html
 
-    msg = MIMEText(cleaned, "html")
+    # Problem statements are rendered in Python for guaranteed badge styling
+    def render_ps():
+        if not problem_statements:
+            return '<p style="color:#6b7280;font-size:13px;">No problem statements extracted today.</p>'
+        parts = []
+        for p in problem_statements:
+            parts.append(
+                f'<div style="border-left:4px solid #ef4444;padding:10px 14px;'
+                f'margin-bottom:12px;background:#fef2f2;border-radius:0 6px 6px 0;">'
+                f'<p style="margin:0 0 4px 0;font-weight:700;font-size:14px;color:#111827;">'
+                f'#{p["rank"]} &mdash; {p["statement"]}</p>'
+                f'<p style="margin:0 0 8px 0;font-size:12px;color:#6b7280;">'
+                f'{p.get("evidence", "")} &middot; {p.get("domain", "")}</p>'
+                f'<span style="display:inline-block;background:#fecaca;color:#991b1b;'
+                f'font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;margin-right:4px;">'
+                f'Severity {p["severity"]}/10</span>'
+                f'<span style="display:inline-block;background:#dbeafe;color:#1d4ed8;'
+                f'font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;margin-right:4px;">'
+                f'Need {p["need"]}/10</span>'
+                f'<span style="display:inline-block;background:#d1fae5;color:#065f46;'
+                f'font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;">'
+                f'Priority {p["priority_score"]}/20</span>'
+                f'</div>'
+            )
+        return "".join(parts)
+
+    html = (
+        '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;'
+        'color:#1f2937;max-width:640px;margin:0 auto;background:#f3f4f6;padding-bottom:32px;">'
+
+        # Header banner
+        '<div style="background:linear-gradient(135deg,#1e3a5f 0%,#2563eb 100%);'
+        'padding:28px 32px;border-radius:8px 8px 0 0;margin-bottom:20px;">'
+        '<h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:700;letter-spacing:-0.3px;">'
+        '&#x1F4CA; Morning Startup &amp; VC Briefing</h1>'
+        f'<p style="margin:6px 0 0 0;color:#bfdbfe;font-size:12px;">{date_str}</p>'
+        '</div>'
+
+        '<div style="padding:0 20px;">'
+        + card("&#x1F525; What&#x27;s Booming Right Now", "#f59e0b",
+               f'<p style="margin:0;color:#374151;">{sections.get("booming", "Unavailable today.")}</p>')
+        + card("&#x1F4C8; Startup Demand Signals", "#10b981",
+               list_wrap(sections.get("demand", "<li>Unavailable today.</li>")))
+        + card("&#x1F4B0; VC Investment Activity", "#8b5cf6",
+               list_wrap(sections.get("vc", "<li>Unavailable today.</li>")))
+        + card("&#x1F9E9; Problem Statements Worth Solving", "#ef4444", render_ps())
+        + card("&#x1F1EE;&#x1F1F3; India Spotlight", "#f97316",
+               list_wrap(sections.get("india", "<li>Unavailable today.</li>")))
+        + card("&#x1F4A1; 3 Startup Ideas Worth Considering", "#06b6d4",
+               list_wrap(sections.get("ideas", "<li>Unavailable today.</li>")))
+        + '</div>'
+
+        # Footer
+        '<div style="margin:8px 20px 0;padding:14px 20px;text-align:center;'
+        'font-size:11px;color:#9ca3af;border-top:1px solid #e5e7eb;background:#ffffff;'
+        'border-radius:0 0 8px 8px;">'
+        'Automated daily briefing &mdash; HN &middot; Product Hunt &middot; Reddit '
+        '&middot; Indie Hackers &middot; a16z &middot; YC &middot; Sequoia &middot; Inc42 &amp; more'
+        '</div>'
+
+        '</div>'
+    )
+    return html
+
+def send_email(html_body: str):
+    msg = MIMEText(html_body, "html")
     msg["Subject"] = "Your Morning Startup & VC Briefing"
     msg["From"] = os.environ["SMTP_USER"]
     msg["To"] = os.environ["TO_EMAIL"]
@@ -532,21 +546,16 @@ def main():
         json.dump(problem_statements, f, indent=2)
 
     try:
-        summary = summarize_with_ai(startup_raw, vc_raw, india_raw, problem_statements)
+        raw_json = summarize_with_ai(startup_raw, vc_raw, india_raw, problem_statements)
+        sections = json.loads(raw_json)
+        html_body = build_email_html(sections, problem_statements)
     except Exception as e:
         print(f"AI summarization failed: {e}")
         traceback.print_exc()
-        # Fall back to raw data if the AI step fails, so the email still sends
-        summary = (
-            "<div style='font-family:Arial,sans-serif;font-size:14px;'>"
-            "<p><strong>AI summarization failed today — sending raw data instead.</strong></p>"
-            f"<pre style='white-space:pre-wrap;font-family:monospace;font-size:12px;'>"
-            f"=== STARTUP DEMAND ===\n{startup_raw}\n\n=== VC INVESTMENT ===\n{vc_raw}\n\n"
-            f"=== INDIA ===\n{india_raw}"
-            f"</pre></div>"
-        )
+        # Fallback: still send a styled email using only the extracted PS
+        html_body = build_email_html({}, problem_statements)
 
-    send_email(summary)
+    send_email(html_body)
     print("Report sent successfully.")
 
 
