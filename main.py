@@ -234,19 +234,31 @@ def safe_fetch(name, fn, *args, **kwargs):
 
 def _strip_json_fences(text):
     """Strip all variants of markdown code fences from an AI JSON response.
-    Handles: ```json, ```JSON, ``` (bare), with or without trailing fence."""
+    Handles: ```json, ```JSON, ``` (bare), with or without trailing fence.
+    Applies iteratively in case the model double-wraps or adds prose before the fence."""
+    import re
     text = text.strip()
-    if text.startswith("```"):
-        # Drop the opening fence line (e.g. ```json or just ```)
-        first_newline = text.find("\n")
-        if first_newline != -1:
-            text = text[first_newline + 1:]
+    # Iteratively strip outermost fence blocks (handles double-wrapping)
+    for _ in range(3):
+        if text.startswith("```"):
+            first_newline = text.find("\n")
+            if first_newline != -1:
+                text = text[first_newline + 1:]
+            else:
+                text = text[3:]  # bare ``` with no newline
+            if text.rstrip().endswith("```"):
+                text = text.rstrip()[:-3]
+            text = text.strip()
         else:
-            text = text[3:]  # bare ``` with no newline
-        # Drop trailing closing fence
+            break
+    # Also handle cases where JSON is preceded by prose before the opening fence
+    fence_match = re.search(r"```(?:json)?\s*\n", text, re.IGNORECASE)
+    if fence_match and not text.startswith("[") and not text.startswith("{"):
+        text = text[fence_match.end():]
         if text.rstrip().endswith("```"):
             text = text.rstrip()[:-3]
-    return text.strip()
+        text = text.strip()
+    return text
 
 
 def _call_gemini_json(prompt, api_key, max_tokens=1024):
@@ -385,16 +397,25 @@ Tone: direct, opinionated analyst. No filler. No greetings. Under 600 words tota
         params={"key": api_key},
         json={
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"maxOutputTokens": 4096},
+            "generationConfig": {
+                "maxOutputTokens": 8192,
+                "temperature": 0.4,
+            },
+            # Disable thinking mode - reasoning tokens eat the output budget
+            # and produce prose preamble that breaks JSON parsing.
+            "thinkingConfig": {"thinkingBudget": 0},
         },
-        timeout=60,
+        timeout=90,
     )
     resp.raise_for_status()
     candidate = resp.json()["candidates"][0]
-    if candidate.get("finishReason") == "MAX_TOKENS":
-        print("WARNING: Gemini summarization truncated (MAX_TOKENS).")
+    finish_reason = candidate.get("finishReason", "UNKNOWN")
+    if finish_reason == "MAX_TOKENS":
+        print("WARNING: Gemini summarization truncated (MAX_TOKENS). Response may be incomplete JSON.")
+    elif finish_reason not in ("STOP", "FINISH_REASON_UNSPECIFIED"):
+        print(f"WARNING: Unexpected finishReason={finish_reason}")
     raw = candidate["content"]["parts"][0]["text"]
-    print(f"[summarize_with_ai] Raw response (first 300 chars): {raw[:300]}")
+    print(f"[summarize_with_ai] finishReason={finish_reason}, raw length={len(raw)}, first 500 chars:\n{raw[:500]}")
     return _strip_json_fences(raw)
 
 
@@ -547,7 +568,12 @@ def main():
 
     try:
         raw_json = summarize_with_ai(startup_raw, vc_raw, india_raw, problem_statements)
-        sections = json.loads(raw_json)
+        try:
+            sections = json.loads(raw_json)
+        except json.JSONDecodeError as json_err:
+            print(f"[main] JSON parse error on AI summary: {json_err}")
+            print(f"[main] Full raw_json that failed (length={len(raw_json)}):\n{raw_json}")
+            raise
         html_body = build_email_html(sections, problem_statements)
     except Exception as e:
         print(f"AI summarization failed: {e}")
