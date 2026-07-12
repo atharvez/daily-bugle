@@ -262,22 +262,36 @@ def _strip_json_fences(text):
 
 
 def _call_gemini_json(prompt, api_key, max_tokens=1024):
-    """POST to Gemini and return the stripped text response."""
-    model = "gemini-2.5-flash"
-    resp = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        headers={"content-type": "application/json"},
-        params={"key": api_key},
-        json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"maxOutputTokens": max_tokens},
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-    print(f"[extract_problem_statements] Raw AI response (first 500 chars):\n{raw[:500]}")
-    return _strip_json_fences(raw)
+    """POST to Gemini and return the stripped text response.
+    Retries up to 3 times on transient 5xx/429 errors with exponential backoff."""
+    import time
+    # gemini-2.0-flash: no thinking mode, reliable JSON output
+    model = "gemini-2.0-flash"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.3},
+    }
+    last_exc = None
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                url, headers={"content-type": "application/json"},
+                params={"key": api_key}, json=payload, timeout=60,
+            )
+            resp.raise_for_status()
+            raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            print(f"[extract_problem_statements] attempt={attempt+1}, raw length={len(raw)}, first 300 chars:\n{raw[:300]}")
+            return _strip_json_fences(raw)
+        except Exception as exc:
+            last_exc = exc
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status and status < 500 and status != 429:
+                raise  # 4xx (not 429) — no point retrying
+            wait = 2 ** attempt * 5  # 5s, 10s, 20s
+            print(f"[extract_problem_statements] attempt={attempt+1} failed ({exc}), retrying in {wait}s...")
+            time.sleep(wait)
+    raise last_exc
 
 
 def extract_problem_statements(startup_raw, vc_raw, india_raw):
@@ -389,34 +403,42 @@ Tone: direct, opinionated analyst. No filler. No greetings. Under 600 words tota
 {india_raw}
 """
 
+    import time
     api_key = os.environ["AI_API_KEY"]
-    model = "gemini-2.5-flash"
-    resp = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        headers={"content-type": "application/json"},
-        params={"key": api_key},
-        json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "maxOutputTokens": 8192,
-                "temperature": 0.4,
-            },
-            # Disable thinking mode - reasoning tokens eat the output budget
-            # and produce prose preamble that breaks JSON parsing.
-            "thinkingConfig": {"thinkingBudget": 0},
+    # gemini-2.0-flash: no thinking mode, reliable, fast JSON output
+    model = "gemini-2.0-flash"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "maxOutputTokens": 8192,
+            "temperature": 0.4,
         },
-        timeout=90,
-    )
-    resp.raise_for_status()
-    candidate = resp.json()["candidates"][0]
-    finish_reason = candidate.get("finishReason", "UNKNOWN")
-    if finish_reason == "MAX_TOKENS":
-        print("WARNING: Gemini summarization truncated (MAX_TOKENS). Response may be incomplete JSON.")
-    elif finish_reason not in ("STOP", "FINISH_REASON_UNSPECIFIED"):
-        print(f"WARNING: Unexpected finishReason={finish_reason}")
-    raw = candidate["content"]["parts"][0]["text"]
-    print(f"[summarize_with_ai] finishReason={finish_reason}, raw length={len(raw)}, first 500 chars:\n{raw[:500]}")
-    return _strip_json_fences(raw)
+    }
+    last_exc = None
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                url, headers={"content-type": "application/json"},
+                params={"key": api_key}, json=payload, timeout=90,
+            )
+            resp.raise_for_status()
+            candidate = resp.json()["candidates"][0]
+            finish_reason = candidate.get("finishReason", "UNKNOWN")
+            if finish_reason == "MAX_TOKENS":
+                print("WARNING: Gemini summarization truncated (MAX_TOKENS).")
+            raw = candidate["content"]["parts"][0]["text"]
+            print(f"[summarize_with_ai] attempt={attempt+1}, finishReason={finish_reason}, raw length={len(raw)}, first 300 chars:\n{raw[:300]}")
+            return _strip_json_fences(raw)
+        except Exception as exc:
+            last_exc = exc
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status and status < 500 and status != 429:
+                raise  # hard 4xx — don't retry
+            wait = 2 ** attempt * 5
+            print(f"[summarize_with_ai] attempt={attempt+1} failed ({exc}), retrying in {wait}s...")
+            time.sleep(wait)
+    raise last_exc
 
 
 # ---------------------------------------------------------------------------
