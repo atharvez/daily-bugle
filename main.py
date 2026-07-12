@@ -261,159 +261,14 @@ def _strip_json_fences(text):
     return text
 
 
-def _call_gemini_json(prompt, api_key, max_tokens=1024):
-    """POST to Gemini and return the stripped text response.
-    Retries up to 3 times on transient 5xx/429 errors with exponential backoff."""
+def _call_gemini(prompt, api_key, max_tokens=8192, label="gemini"):
+    """POST to Gemini; retry 3x honouring Retry-After header (30/60/120s backoff)."""
     import time
-    # gemini-2.0-flash: no thinking mode, reliable JSON output
     model = "gemini-2.0-flash"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.3},
-    }
-    last_exc = None
-    for attempt in range(3):
-        try:
-            resp = requests.post(
-                url, headers={"content-type": "application/json"},
-                params={"key": api_key}, json=payload, timeout=60,
-            )
-            resp.raise_for_status()
-            raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-            print(f"[extract_problem_statements] attempt={attempt+1}, raw length={len(raw)}, first 300 chars:\n{raw[:300]}")
-            return _strip_json_fences(raw)
-        except Exception as exc:
-            last_exc = exc
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            if status and status < 500 and status != 429:
-                raise  # 4xx (not 429) — no point retrying
-            wait = 2 ** attempt * 5  # 5s, 10s, 20s
-            print(f"[extract_problem_statements] attempt={attempt+1} failed ({exc}), retrying in {wait}s...")
-            time.sleep(wait)
-    raise last_exc
-
-
-def extract_problem_statements(startup_raw, vc_raw, india_raw):
-    """Ask Gemini for a structured JSON list of problem statements drawn from
-    ALL sources (startup demand, VC signals, and India-specific data), scored
-    on severity and need, and ranked. Used both to build the main email's
-    Problem Statements section and as a hand-off artifact for Agent 2."""
-    api_key = os.environ["AI_API_KEY"]
-
-    SCHEMA = (
-        '[{"rank": 1, "statement": "...", "evidence": "one line", '
-        '"domain": "e.g. fintech", "severity": 8, "need": 7, "priority_score": 15}]'
-    )
-
-    prompt = f"""Read all the raw data below and identify 3-5 clear, concrete
-PROBLEM STATEMENTS — real unmet needs or recurring frustrations visible in
-today's startup, VC, and tech community data. State each as a problem, not
-a solution. Draw from any source — HN, Product Hunt, Reddit, VC blogs,
-Indie Hackers, India-specific feeds — wherever the strongest signal is.
-
-For each, score:
-- severity (1-10): how painful the problem is if left unsolved
-- need (1-10): breadth and urgency of demand based on today's evidence
-- priority_score: severity + need (max 20)
-
-Sort descending by priority_score. Return only the top 3-5.
-Respond ONLY with valid JSON, no markdown fences, no commentary:
-{SCHEMA}
-
-=== STARTUP DEMAND RAW DATA ===
-{startup_raw}
-
-=== VC INVESTMENT RAW DATA ===
-{vc_raw}
-
-=== ADDITIONAL SIGNALS RAW DATA ===
-{india_raw}
-"""
-
-    text = _call_gemini_json(prompt, api_key)
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as e:
-        print(f"[extract_problem_statements] JSON parse error: {e}\nRaw text: {text}")
-        parsed = []
-
-    if not parsed:
-        print("[extract_problem_statements] Extraction returned empty — no problem statements today.")
-        return []
-
-    # Defensive re-sort and re-number
-    parsed.sort(key=lambda p: p.get("priority_score", 0), reverse=True)
-    for i, p in enumerate(parsed, start=1):
-        p["rank"] = i
-    print(f"[extract_problem_statements] Extracted {len(parsed)} problem statement(s).")
-    return parsed
-
-
-# ---------------------------------------------------------------------------
-# AI SUMMARIZATION
-# ---------------------------------------------------------------------------
-
-def summarize_with_ai(startup_raw, vc_raw, india_raw, problem_statements):
-    """Ask Gemini for the 6 content sections as a JSON object.
-    No HTML in the prompt — formatting is handled entirely by build_email_html()."""
-    ps_lines = "\n".join(
-        f"  Rank #{p['rank']}: {p['statement']} "
-        f"| Domain: {p['domain']} | Evidence: {p['evidence']} "
-        f"| Severity: {p['severity']}/10 | Need: {p['need']}/10 "
-        f"| Priority: {p['priority_score']}/20"
-        for p in problem_statements
-    ) or "  No problem statements extracted today."
-
-    prompt = f"""You are a sharp startup analyst. Using the raw data below, write
-content for SIX sections of a daily briefing. Return ONLY a valid JSON object
-(no markdown fences, no commentary) with exactly these six keys:
-
-{{
-  "booming": "...",
-  "demand": "...",
-  "vc": "...",
-  "problems": "...",
-  "india": "...",
-  "ideas": "..."
-}}
-
-Guidelines per key (each value is a short HTML fragment — only <p>, <ul>, <li>,
-<strong>, <a href="URL"> tags; no wrapper divs, no inline styles):
-
-"booming": 2-4 trends with real cross-source momentum. Synthesize — don't list.
-"demand":  3-5 notable items, each as a <li> with a one-liner and a source link.
-"vc":      3-5 VC items, same <li> format with links.
-"problems": Use EXACTLY the ranked problem statements below — do not invent or
-            re-score. Present each as a <li> with rank, statement, evidence, scores.
-{ps_lines}
-"india":   2-4 India-specific items as <li> with links. If data is thin, say so.
-"ideas":   3 concrete startup ideas as <li>. Each: idea name in <strong>,
-           then 1-2 sentences on who it's for and why the timing is right.
-
-Tone: direct, opinionated analyst. No filler. No greetings. Under 600 words total.
-
-=== STARTUP DEMAND RAW DATA ===
-{startup_raw}
-
-=== VC INVESTMENT RAW DATA ===
-{vc_raw}
-
-=== ADDITIONAL SIGNALS RAW DATA ===
-{india_raw}
-"""
-
-    import time
-    api_key = os.environ["AI_API_KEY"]
-    # gemini-2.0-flash: no thinking mode, reliable, fast JSON output
-    model = "gemini-2.0-flash"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "maxOutputTokens": 8192,
-            "temperature": 0.4,
-        },
+        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.4},
     }
     last_exc = None
     for attempt in range(3):
@@ -423,22 +278,88 @@ Tone: direct, opinionated analyst. No filler. No greetings. Under 600 words tota
                 params={"key": api_key}, json=payload, timeout=90,
             )
             resp.raise_for_status()
-            candidate = resp.json()["candidates"][0]
-            finish_reason = candidate.get("finishReason", "UNKNOWN")
-            if finish_reason == "MAX_TOKENS":
-                print("WARNING: Gemini summarization truncated (MAX_TOKENS).")
-            raw = candidate["content"]["parts"][0]["text"]
-            print(f"[summarize_with_ai] attempt={attempt+1}, finishReason={finish_reason}, raw length={len(raw)}, first 300 chars:\n{raw[:300]}")
+            raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            finish = resp.json()["candidates"][0].get("finishReason", "?")
+            print(f"[{label}] ok attempt={attempt+1} finish={finish} len={len(raw)} preview={raw[:200]!r}")
             return _strip_json_fences(raw)
         except Exception as exc:
             last_exc = exc
-            status = getattr(getattr(exc, "response", None), "status_code", None)
+            resp_obj = getattr(exc, "response", None)
+            status = getattr(resp_obj, "status_code", None)
             if status and status < 500 and status != 429:
                 raise  # hard 4xx — don't retry
-            wait = 2 ** attempt * 5
-            print(f"[summarize_with_ai] attempt={attempt+1} failed ({exc}), retrying in {wait}s...")
+            retry_after = resp_obj.headers.get("Retry-After") if resp_obj is not None else None
+            wait = int(retry_after) if retry_after else 30 * (2 ** attempt)  # 30/60/120s
+            print(f"[{label}] attempt={attempt+1} failed ({exc}), waiting {wait}s...")
             time.sleep(wait)
     raise last_exc
+
+
+def analyze_and_summarize(startup_raw, vc_raw, india_raw):
+    """Single Gemini call returning both problem_statements and 6 email sections.
+    Replaces two-call design that reliably triggered 429 on free-tier keys."""
+    api_key = os.environ["AI_API_KEY"]
+
+    PS_SCHEMA = (
+        '[{"rank":1,"statement":"...","evidence":"one line",'
+        '"domain":"e.g. fintech","severity":8,"need":7,"priority_score":15}]'
+    )
+
+    prompt = f"""You are a sharp startup analyst. Read the raw data below and return
+ONE valid JSON object (no markdown fences, no commentary) with exactly these keys:
+
+{{
+  "problem_statements": {PS_SCHEMA},
+  "sections": {{
+    "booming": "...",
+    "demand":  "...",
+    "vc":      "...",
+    "problems":"...",
+    "india":   "...",
+    "ideas":   "..."
+  }}
+}}
+
+--- problem_statements rules ---
+3-5 concrete unmet needs from today's data. Score severity (1-10), need (1-10),
+priority_score = severity+need. Sort descending. Return top 3-5.
+
+--- sections rules (HTML fragments: only <p><ul><li><strong><a href> tags) ---
+"booming": 2-4 trends with cross-source momentum. Synthesise, don't list.
+"demand":  3-5 items as <li> with one-liner + source link.
+"vc":      3-5 VC items as <li> with links.
+"problems": Mirror problem_statements as <li> — rank, statement, evidence, scores.
+"india":   2-4 India items as <li> with links. If data is thin, say so.
+"ideas":   3 startup ideas as <li>. Name in <strong>, 1-2 sentences each.
+
+Tone: direct, opinionated. No filler. No greetings. Under 700 words total.
+
+=== STARTUP DEMAND RAW DATA ===
+{startup_raw}
+
+=== VC INVESTMENT RAW DATA ===
+{vc_raw}
+
+=== ADDITIONAL SIGNALS RAW DATA ===
+{india_raw}
+"""
+
+    raw = _call_gemini(prompt, api_key, label="analyze_and_summarize")
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"[analyze_and_summarize] JSON parse error: {e}\nRaw (len={len(raw)}):\n{raw}")
+        return [], {}
+
+    ps = result.get("problem_statements", [])
+    sections = result.get("sections", {})
+    if not isinstance(ps, list):
+        ps = []
+    ps.sort(key=lambda p: p.get("priority_score", 0), reverse=True)
+    for i, p in enumerate(ps, start=1):
+        p["rank"] = i
+    print(f"[analyze_and_summarize] {len(ps)} problem statements, sections={list(sections.keys())}")
+    return ps, sections
 
 
 # ---------------------------------------------------------------------------
@@ -577,31 +498,17 @@ def main():
     india_raw = "\n\n".join(india_sections)
 
     try:
-        problem_statements = extract_problem_statements(startup_raw, vc_raw, india_raw)
+        problem_statements, sections = analyze_and_summarize(startup_raw, vc_raw, india_raw)
     except Exception as e:
-        print(f"Problem statement extraction failed: {e}")
+        print(f"analyze_and_summarize failed: {e}")
         traceback.print_exc()
-        problem_statements = []
+        problem_statements, sections = [], {}
 
-    # Save as a hand-off artifact for Agent 2, which runs after this job and
-    # searches adjacent domains for related problem statements.
+    # Save as a hand-off artifact for Agent 2
     with open("problem_statements.json", "w") as f:
         json.dump(problem_statements, f, indent=2)
 
-    try:
-        raw_json = summarize_with_ai(startup_raw, vc_raw, india_raw, problem_statements)
-        try:
-            sections = json.loads(raw_json)
-        except json.JSONDecodeError as json_err:
-            print(f"[main] JSON parse error on AI summary: {json_err}")
-            print(f"[main] Full raw_json that failed (length={len(raw_json)}):\n{raw_json}")
-            raise
-        html_body = build_email_html(sections, problem_statements)
-    except Exception as e:
-        print(f"AI summarization failed: {e}")
-        traceback.print_exc()
-        # Fallback: still send a styled email using only the extracted PS
-        html_body = build_email_html({}, problem_statements)
+    html_body = build_email_html(sections, problem_statements)
 
     send_email(html_body)
     print("Report sent successfully.")
