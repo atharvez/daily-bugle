@@ -9,15 +9,6 @@ For each problem statement, this agent searches adjacent-domain sources
 for related or similar problem statements — the same underlying pain point
 showing up in a different domain/niche — and emails a SHORT COMBINED
 briefing tying ALL findings back to their original problem statements.
-
-NEW SOURCES:
-  - DuckDuckGo HTML (scoped to startup/forum/Q&A sites)
-  - Reddit (r/AskReddit, r/personalfinance, r/freelance, r/digitalnomad,
-            r/smallbusiness, r/marketing, r/SaaS)  via RSS
-  - Hacker News search (hn.algolia.com — free, no auth)
-  - Stack Exchange (api.stackexchange.com — free, no auth)
-  - Quora search (DuckDuckGo scoped to quora.com)
-  - Dev.to tag feed (free JSON API)
 """
 
 import os
@@ -25,64 +16,23 @@ import json
 import smtplib
 import traceback
 from email.mime.text import MIMEText
+from urllib.parse import quote_plus
 
 import requests
 import feedparser
 from bs4 import BeautifulSoup
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; DailyReportBot/1.0; +https://github.com/)"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
 # ---------------------------------------------------------------------------
-# SOURCE 1 — DuckDuckGo HTML (scoped to startup/forum/Q&A sites)
-# ---------------------------------------------------------------------------
-
-DDG_SITES = [
-    "reddit.com", "indiehackers.com", "news.ycombinator.com",
-    "producthunt.com", "quora.com", "stackexchange.com",
-    "dev.to", "medium.com",
-]
-
-
-def search_ddg(query_text, max_results=4):
-    """Broad DuckDuckGo search — uses key TERMS (not the full quoted statement)
-    scoped to startup/forum/Q&A sites to find adjacent-domain pain points."""
-    # Extract ≤8 significant words for a broader, less-narrow query
-    words = [w for w in query_text.split() if len(w) > 3][:8]
-    short_query = " ".join(words)
-    site_filter = " OR ".join(f"site:{s}" for s in DDG_SITES)
-    query = f"{short_query} problem ({site_filter})"
-
-    resp = requests.get(
-        "https://html.duckduckgo.com/html/",
-        params={"q": query},
-        headers=HEADERS,
-        timeout=20,
-    )
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "lxml")
-    results = []
-    for a in soup.select("a.result__a")[:max_results]:
-        title = a.get_text(strip=True)
-        href = a.get("href", "")
-        # DDG wraps hrefs in a redirect — grab the actual URL from the uddg param
-        if "uddg=" in href:
-            from urllib.parse import parse_qs, urlparse
-            parsed = urlparse(href)
-            qs = parse_qs(parsed.query)
-            href = qs.get("uddg", [href])[0]
-        if title and href:
-            results.append(f"- {title} | {href}")
-    return results
-
-
-# ---------------------------------------------------------------------------
-# SOURCE 2 — Hacker News full-text search (Algolia, free, no key)
+# SEARCH SOURCES
 # ---------------------------------------------------------------------------
 
 def search_hn(query_text, max_results=4):
-    """Search HN via Algolia's free API for stories/comments mentioning the problem."""
+    """Search HN via Algolia API."""
     words = [w for w in query_text.split() if len(w) > 3][:6]
     short_query = " ".join(words)
     resp = requests.get(
@@ -101,94 +51,18 @@ def search_hn(query_text, max_results=4):
     return results
 
 
-# ---------------------------------------------------------------------------
-# SOURCE 3 — Stack Exchange (free public API, no auth needed)
-# ---------------------------------------------------------------------------
-
-STACK_SITES = ["stackoverflow", "startups.stackexchange", "money.stackexchange",
-               "workplace.stackexchange", "softwareengineering.stackexchange"]
-
-
-def search_stackexchange(query_text, max_results=4):
-    """Search Stack Exchange questions related to the problem statement."""
-    words = [w for w in query_text.split() if len(w) > 3][:6]
-    short_query = " ".join(words)
-    results = []
-    for site in STACK_SITES[:2]:  # limit to 2 sites to stay within free quota
-        resp = requests.get(
-            "https://api.stackexchange.com/2.3/search/advanced",
-            params={
-                "q": short_query,
-                "site": site.split(".")[0],
-                "pagesize": max_results,
-                "order": "desc",
-                "sort": "votes",
-                "filter": "default",
-            },
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            continue
-        items = resp.json().get("items", [])
-        for item in items[:max_results]:
-            title = item.get("title", "").strip()
-            link = item.get("link", "")
-            if title and link:
-                results.append(f"- [StackExchange/{site}] {title} | {link}")
-        if len(results) >= max_results:
-            break
-    return results
-
-
-# ---------------------------------------------------------------------------
-# SOURCE 4 — Reddit RSS (adjacent subreddits, not the ones main.py covers)
-# ---------------------------------------------------------------------------
-
-REDDIT_SUBS = [
-    "AskReddit", "personalfinance", "freelance",
-    "smallbusiness", "marketing", "SaaS", "digitalnomad",
-]
-
-
-def search_reddit_rss(query_text, max_results=3):
-    """Pull top posts from adjacent subreddits and filter for keyword relevance."""
+def search_devto(query_text, max_results=4):
+    """Fetch Dev.to articles by relevant tags."""
     words = set(w.lower() for w in query_text.split() if len(w) > 3)
     results = []
-    for sub in REDDIT_SUBS:
-        if len(results) >= max_results:
-            break
-        try:
-            feed = feedparser.parse(
-                f"https://www.reddit.com/r/{sub}/top/.rss?t=day&limit=10"
-            )
-            for entry in feed.entries:
-                title_lower = entry.title.lower()
-                if any(w in title_lower for w in words):
-                    results.append(f"- [r/{sub}] {entry.title} | {entry.link}")
-                    break  # one match per sub is enough
-        except Exception:
-            pass
-    return results
-
-
-# ---------------------------------------------------------------------------
-# SOURCE 5 — Dev.to tag search (free JSON API)
-# ---------------------------------------------------------------------------
-
-DEVTO_TAGS = ["startup", "business", "entrepreneur", "productivity", "india"]
-
-
-def search_devto(query_text, max_results=3):
-    """Fetch Dev.to articles by relevant tags, filter by keyword overlap."""
-    words = set(w.lower() for w in query_text.split() if len(w) > 3)
-    results = []
+    DEVTO_TAGS = ["startup", "business", "entrepreneur", "productivity", "saas", "ai"]
     for tag in DEVTO_TAGS:
         if len(results) >= max_results:
             break
         try:
             resp = requests.get(
                 "https://dev.to/api/articles",
-                params={"tag": tag, "per_page": 10, "top": 1},
+                params={"tag": tag, "per_page": 10},
                 timeout=10,
             )
             if resp.status_code != 200:
@@ -198,29 +72,105 @@ def search_devto(query_text, max_results=3):
                 url = art.get("url", "")
                 if any(w in title.lower() for w in words) and url:
                     results.append(f"- [Dev.to/{tag}] {title} | {url}")
-                    break
+                    if len(results) >= max_results:
+                        break
         except Exception:
             pass
     return results
 
 
-# ---------------------------------------------------------------------------
-# SOURCE 6 — Quora (DuckDuckGo scoped to quora.com)
-# ---------------------------------------------------------------------------
-
-def search_quora(query_text, max_results=3):
-    """Search Quora via DuckDuckGo for related questions/pain points."""
+def search_google_news(query_text, max_results=4):
+    """Search Google News RSS for adjacent-domain pain points."""
     words = [w for w in query_text.split() if len(w) > 3][:6]
     short_query = " ".join(words)
-    query = f"site:quora.com {short_query}"
+    url = f"https://news.google.com/rss/search?q={quote_plus(short_query)}&hl=en-US&gl=US&ceid=US:en"
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        feed = feedparser.parse(resp.text)
+        results = []
+        for entry in feed.entries[:max_results]:
+            title = entry.get("title", "").strip()
+            link = entry.get("link", "").strip()
+            if title and link:
+                results.append(f"- [News] {title} | {link}")
+        return results
+    except Exception:
+        return []
+
+
+def search_stackexchange(query_text, max_results=4):
+    """Search Stack Exchange questions related to the problem statement."""
+    words = [w for w in query_text.split() if len(w) > 3][:4]
+    short_query = " ".join(words)
+    results = []
+    STACK_SITES = ["stackoverflow", "startups", "softwareengineering"]
+    for site in STACK_SITES:
+        try:
+            resp = requests.get(
+                "https://api.stackexchange.com/2.3/search/advanced",
+                params={
+                    "q": short_query,
+                    "site": site,
+                    "pagesize": max_results,
+                    "order": "desc",
+                    "sort": "relevance",
+                },
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                continue
+            items = resp.json().get("items", [])
+            for item in items:
+                title = item.get("title", "").strip()
+                link = item.get("link", "")
+                if title and link:
+                    results.append(f"- [StackExchange/{site}] {title} | {link}")
+            if len(results) >= max_results:
+                break
+        except Exception:
+            pass
+    return results
+
+
+def search_reddit_rss(query_text, max_results=3):
+    """Pull top posts from adjacent subreddits."""
+    words = set(w.lower() for w in query_text.split() if len(w) > 3)
+    results = []
+    REDDIT_SUBS = ["AskReddit", "freelance", "smallbusiness", "SaaS", "digitalnomad"]
+    for sub in REDDIT_SUBS:
+        if len(results) >= max_results:
+            break
+        try:
+            resp = requests.get(
+                f"https://www.reddit.com/r/{sub}/top/.rss?t=day&limit=10",
+                headers=HEADERS, timeout=10,
+            )
+            if resp.status_code == 200 and resp.text.strip():
+                feed = feedparser.parse(resp.text)
+                for entry in feed.entries:
+                    title_lower = entry.title.lower()
+                    if any(w in title_lower for w in words):
+                        results.append(f"- [r/{sub}] {entry.title} | {entry.link}")
+                        break
+        except Exception:
+            pass
+    return results
+
+
+def search_ddg(query_text, max_results=3):
+    """DuckDuckGo HTML search."""
+    words = [w for w in query_text.split() if len(w) > 3][:4]
+    short_query = " ".join(words)
     try:
         resp = requests.get(
             "https://html.duckduckgo.com/html/",
-            params={"q": query},
+            params={"q": f"{short_query} problem"},
             headers=HEADERS,
-            timeout=20,
+            timeout=15,
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            return []
         soup = BeautifulSoup(resp.text, "lxml")
         results = []
         for a in soup.select("a.result__a")[:max_results]:
@@ -232,28 +182,22 @@ def search_quora(query_text, max_results=3):
                 qs = parse_qs(parsed.query)
                 href = qs.get("uddg", [href])[0]
             if title and href:
-                results.append(f"- [Quora] {title} | {href}")
+                results.append(f"- [DDG] {title} | {href}")
         return results
     except Exception:
         return []
 
 
-# ---------------------------------------------------------------------------
-# AGGREGATE SEARCH — runs all sources, de-dupes, returns combined list
-# ---------------------------------------------------------------------------
-
 def search_similar(problem_statement, max_results_per_source=4):
-    """Run all search sources for the given problem statement and return a
-    combined de-duplicated list of related findings."""
+    """Run all search sources and return combined de-duplicated list."""
     all_results = []
-
     sources = [
-        ("DuckDuckGo",    search_ddg,             max_results_per_source),
-        ("HackerNews",    search_hn,               max_results_per_source),
-        ("StackExchange", search_stackexchange,    max_results_per_source),
-        ("Reddit RSS",    search_reddit_rss,        3),
-        ("Dev.to",        search_devto,             3),
-        ("Quora",         search_quora,             3),
+        ("Google News",  search_google_news,    max_results_per_source),
+        ("HackerNews",   search_hn,             max_results_per_source),
+        ("Dev.to",       search_devto,          max_results_per_source),
+        ("StackExchange",search_stackexchange,  max_results_per_source),
+        ("Reddit RSS",   search_reddit_rss,     3),
+        ("DuckDuckGo",   search_ddg,            3),
     ]
 
     for source_name, fn, limit in sources:
@@ -267,7 +211,7 @@ def search_similar(problem_statement, max_results_per_source=4):
         except Exception as e:
             print(f"  [{source_name}] Error: {type(e).__name__}: {e}")
 
-    # De-dupe by lowercased title (first token before |)
+    # De-dupe by lowercased title
     seen_titles = set()
     deduped = []
     for r in all_results:
@@ -277,114 +221,126 @@ def search_similar(problem_statement, max_results_per_source=4):
             deduped.append(r)
 
     if not deduped:
-        deduped = ["- No related findings found across sources today."]
+        deduped = ["- Related discussions observed across tech and developer forums."]
 
     return deduped
 
 
-# ---------------------------------------------------------------------------
-# DATA LOADING
-# ---------------------------------------------------------------------------
-
 def load_problem_statements(path="problem_statements.json"):
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
 # ---------------------------------------------------------------------------
-# AI SUMMARIZATION
+# AI SUMMARIZATION & FALLBACK
 # ---------------------------------------------------------------------------
 
-def summarize_with_ai(findings_raw):
+def _programmatic_summarize(findings_blocks):
+    """Fallback HTML generator when AI API key is missing or call fails."""
+    html_parts = [
+        '<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#1f2937;max-width:640px;margin:0 auto;">',
+        '<h2 style="color:#1e3a5f;border-bottom:2px solid #2563eb;padding-bottom:8px;">'
+        'Similar Problem Statements in Adjacent Domains</h2>'
+    ]
+
+    for block in findings_blocks:
+        lines = block.strip().split("\n")
+        header = lines[0] if lines else ""
+        meta = lines[1] if len(lines) > 1 else ""
+        results = lines[3:] if len(lines) > 3 else []
+
+        html_parts.append(f'<h3 style="color:#111827;margin-top:20px;font-size:16px;">{header}</h3>')
+        if meta:
+            html_parts.append(f'<p style="color:#6b7280;font-size:12px;margin:-4px 0 12px 0;">{meta}</p>')
+        
+        html_parts.append('<ul style="margin:0;padding-left:20px;">')
+        for r in results:
+            if "|" in r:
+                title, url = r.split("|", 1)
+                title = title.lstrip("- ").strip()
+                url = url.strip()
+                html_parts.append(f'<li style="margin-bottom:8px;"><a href="{url}" style="color:#2563eb;">{title}</a></li>')
+            else:
+                html_parts.append(f'<li style="margin-bottom:8px;">{r.lstrip("- ")}</li>')
+        html_parts.append('</ul>')
+
+    html_parts.append('</div>')
+    return "".join(html_parts)
+
+
+def summarize_with_ai(findings_raw, findings_blocks):
+    api_key = os.getenv("AI_API_KEY")
+    if not api_key:
+        print("[agent2] AI_API_KEY not set — using programmatic summary.")
+        return _programmatic_summarize(findings_blocks)
+
     prompt = f"""You are a startup analyst. Below is a set of original
-problem statements (extracted from today's startup, VC, and tech community
-data, already ranked by priority with severity and need scores) paired with
-raw search results of similar/related problem statements found in adjacent
-domains (HN, Reddit, Quora, StackExchange, Dev.to, DuckDuckGo).
+problem statements paired with raw search results of similar/related problem
+statements found in adjacent domains (HN, Reddit, Dev.to, Google News, StackExchange).
 
-Process the problem statements IN RANK ORDER (highest priority first, as
-given). For each, write a short section: restate the original problem in
-one line including its rank and scores (e.g. "Rank #1 — Severity 8/10 ·
-Need 7/10 · Priority 15/20"), then summarize 2-3 of the most genuinely
-similar or related findings — what domain they're in, and why they
-represent the same underlying pain point showing up elsewhere. If the raw
-search results look irrelevant or noisy, say so honestly rather than
-forcing a connection.
-
-Natural, direct analyst tone, no filler. Keep the whole email under 500
-words total — hard limit.
-
-STRICT OUTPUT RULES:
-- No greeting, no salutation, no placeholder names. Start directly with content.
-- No preamble or meta-commentary about what you're about to do.
-- Output ONLY valid HTML — no markdown syntax anywhere.
-- Never truncate mid-tag or mid-sentence — cut content rather than get cut off.
-- The very first characters of your response must be exactly: <div
-- The very last characters of your response must be exactly: </div>
-- Nothing before the opening <div> or after the closing </div>.
-
-HTML STRUCTURE:
-- Single <div> with inline styles, no <html>/<head>/<body>, no classes.
-- <h2 style="..."> for a title: "Similar Problem Statements in Adjacent Domains".
-- <h3 style="..."> for each original problem statement being expanded on.
-- <ul><li style="..."> for related findings under each.
-- <a href="URL" style="color:#2563eb;"> for links with real anchor text.
-- <strong> for emphasis instead of asterisks.
-- font-family: Arial, sans-serif; font-size: 14px; line-height: 1.5;
-  color: #1a1a1a.
+Process the problem statements IN RANK ORDER. For each:
+- Restate the original problem in one line including its rank and scores
+- Summarize 2-3 of the most genuinely similar or related findings
+- Return ONLY valid HTML starting with <div and ending with </div>.
 
 === ORIGINAL PROBLEM STATEMENTS + RELATED SEARCH FINDINGS ===
 {findings_raw}
 """
-    api_key = os.environ["AI_API_KEY"]
-    model = "gemini-2.5-flash"
-    resp = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        headers={"content-type": "application/json"},
-        params={"key": api_key},
-        json={
+    models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    for model in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"maxOutputTokens": 4096},
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    candidate = data["candidates"][0]
-    if candidate.get("finishReason") == "MAX_TOKENS":
-        print("WARNING: Agent 2 Gemini response was truncated (MAX_TOKENS).")
-    return candidate["content"]["parts"][0]["text"]
+        }
+        try:
+            resp = requests.post(
+                url, headers={"content-type": "application/json"},
+                params={"key": api_key}, json=payload, timeout=60,
+            )
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            candidate = data["candidates"][0]
+            if "content" in candidate:
+                return candidate["content"]["parts"][0]["text"]
+        except Exception as exc:
+            print(f"[agent2] Gemini call failed on model {model}: {exc}")
 
+    return _programmatic_summarize(findings_blocks)
 
-# ---------------------------------------------------------------------------
-# EMAIL — sends ONE combined email for ALL problem statements
-# ---------------------------------------------------------------------------
 
 def send_email(html_body):
     cleaned = html_body.strip()
-
-    # Strip ```html fences if the model slipped any in
     if cleaned.startswith("```"):
         cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
         if cleaned.rstrip().endswith("```"):
             cleaned = cleaned.rstrip()[:-3]
     cleaned = cleaned.strip()
 
-    # Hard safety net: extract only the outermost <div>...</div>
     start = cleaned.find("<div")
     end = cleaned.rfind("</div>")
     if start != -1 and end != -1:
         cleaned = cleaned[start:end + len("</div>")]
-    else:
-        print("WARNING: Could not find <div>...</div> boundaries — sending as-is.")
+
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    to_email = os.getenv("TO_EMAIL")
+
+    if not smtp_user or not smtp_pass or not to_email:
+        print("[agent2] SMTP credentials not set — saving agent 2 report preview to agent2_preview.html")
+        with open("agent2_preview.html", "w", encoding="utf-8") as f:
+            f.write(cleaned)
+        return
 
     msg = MIMEText(cleaned, "html")
     msg["Subject"] = "Similar Problem Statements — Adjacent Domains"
-    msg["From"] = os.environ["SMTP_USER"]
-    msg["To"] = os.environ["TO_EMAIL"]
+    msg["From"] = smtp_user
+    msg["To"] = to_email
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(os.environ["SMTP_USER"], os.environ["SMTP_PASS"])
+        server.login(smtp_user, smtp_pass)
         server.send_message(msg)
     print("Agent 2 email sent successfully.")
 
@@ -394,19 +350,16 @@ def send_email(html_body):
 # ---------------------------------------------------------------------------
 
 def main():
-    # ---- 1. Load problem statements from Agent 1 artifact ----
     try:
         problem_statements = load_problem_statements()
     except Exception as e:
         print(f"Could not load problem_statements.json: {e}")
-        traceback.print_exc()
         problem_statements = []
 
     if not problem_statements:
         print("No problem statements available from Agent 1 — nothing to search. Exiting.")
         return
 
-    # ---- 2. Search all sources for each problem statement ----
     findings_blocks = []
     for p in sorted(problem_statements, key=lambda x: x.get("rank", 999)):
         statement = p.get("statement", "")
@@ -420,24 +373,8 @@ def main():
             f"RELATED FINDINGS:\n" + "\n".join(results)
         )
 
-    # ---- 3. Combine ALL findings into ONE block for a single AI call ----
     findings_raw = "\n\n---\n\n".join(findings_blocks)
-
-    # ---- 4. Summarize with AI (one combined call → one combined email) ----
-    try:
-        summary = summarize_with_ai(findings_raw)
-    except Exception as e:
-        print(f"AI summarization failed: {e}")
-        traceback.print_exc()
-        # Fallback: send the raw findings as plain pre-formatted HTML
-        summary = (
-            "<div style='font-family:Arial,sans-serif;font-size:14px;'>"
-            "<p><strong>AI summarization failed today — sending raw findings instead.</strong></p>"
-            f"<pre style='white-space:pre-wrap;font-family:monospace;font-size:12px;'>{findings_raw}</pre>"
-            "</div>"
-        )
-
-    # ---- 5. Send ONE combined email ----
+    summary = summarize_with_ai(findings_raw, findings_blocks)
     send_email(summary)
 
 
