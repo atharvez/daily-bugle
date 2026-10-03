@@ -1,50 +1,37 @@
-# SuprAgent — Daily Startup & VC Report
+﻿# Daily Bugle ðŸ“°
 
-A lightweight Python script that aggregates startup demand signals and VC investment activity from multiple sources, summarizes them with an AI model (Gemini), and emails the result daily.
+A Python-powered automated news aggregation and daily digest generator.
 
-## Sources
+## Overview
 
-**Startup Demand**
-- Hacker News / YC (official API)
-- Product Hunt (GraphQL API)
-- Reddit r/startups & r/Entrepreneur
-- Indie Hackers (scrape)
-- G2 Trending (scrape)
+Daily Bugle fetches, processes, and summarizes news from multiple sources, delivering a clean daily briefing. Named after the iconic newspaper from Spider-Man, it cuts through the noise to deliver what matters.
 
-**VC Investment Activity**
-- a16z blog (RSS)
-- YC Blog (RSS)
-- Sequoia articles (scrape)
-- Peak XV insights (scrape)
+## Tech Stack
 
-## Setup
+- **Language:** Python 3.10+
+- **HTTP:** requests / httpx
+- **Parsing:** BeautifulSoup4 / feedparser
+- **Scheduling:** schedule or cron
 
-### 1. Install dependencies
+## Features
+
+- ðŸ“¡ **Multi-Source Aggregation** â€” Pull from RSS feeds, APIs, and web pages
+- ðŸ¤– **AI Summaries** â€” Condense long articles into key points
+- ðŸ“§ **Digest Output** â€” Generate daily newsletters (email, markdown, HTML)
+- ðŸ”– **Topic Filtering** â€” Customizable keyword and category filters
+- â° **Scheduled Runs** â€” Set it and forget it
+
+## Getting Started
+
 ```bash
+git clone https://github.com/atharvez/daily-bugle.git
+cd daily-bugle
+python -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-```
-
-### 2. Set environment variables
-```bash
-AI_API_KEY=your_gemini_api_key
-PRODUCTHUNT_TOKEN=your_producthunt_oauth_token
-SMTP_USER=your_gmail_address@gmail.com
-SMTP_PASS=your_gmail_app_password
-TO_EMAIL=recipient@example.com
-```
-
-> **Note:** For Gmail, use an [App Password](https://support.google.com/accounts/answer/185833), not your main account password.
-
-### 3. Run
-```bash
 python main.py
 ```
 
-### 4. Automate (daily schedule)
-See `daily-report.yml` for a GitHub Actions workflow that runs the script on a schedule.
+## License
 
-## Configuration
-
-The `daily-report.yml` GitHub Actions workflow schedules the job. Adjust the `cron` expression to your preferred time.
-
-All credentials are read from environment variables — never hard-coded. Store them as [GitHub Actions Secrets](https://docs.github.com/en/actions/security-guides/encrypted-secrets) when running via CI.
+MIT Â© [Atharva Desai](https://github.com/atharvez)
